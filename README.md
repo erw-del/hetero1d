@@ -156,7 +156,15 @@ for t in sol.interband()[:5]:     # e, h, band ('hh'/'lh'), E (eV), lam_nm, over
 E = np.linspace(1.4, 1.7, 1000)
 A = sol.interband_absorption(E, gamma=0.005)                  # relative units
 ```
-
+## Excitons
+```python
+x = sol.exciton()                # e0-hh0 exciton
+print(x["Eb_meV"], x["lambda_nm"], x["E_transition_eV"])   # binding (meV), radius (nm), line (eV)
+x_lh = sol.exciton(hole="lh")    # light-hole exciton
+x_11 = sol.exciton(ie=1, ih=1)   # excited subbands
+```
+Variational 1s exciton on the hetero1d subband states (bulk and 2D limits built in).
+One-parameter trial function: binding energies are a lower bound; trends are reliable.
 ## 6. Carrier statistics
 ```python
 EF, populations = sol.fermi_level(5e11)    # Fermi level (eV), cm^-2 in each subband
