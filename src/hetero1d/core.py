@@ -815,26 +815,20 @@ class Solver:
         """
         res = dict(F=np.asarray(fields, float), Ee=[], Ehh=[], Elh=[], E_e0hh0=[],
                    ov_e0hh0=[], E_e0lh0=[], ov_e0lh0=[], E01=[], z01=[], zmean_e0=[], zmean_hh0=[])
-        # reference states at zero field: each state is followed through the
-        # sweep as the eigenstate with the largest overlap with its reference
-        # (robust against anticrossings with quasi-continuum states that the
-        # tilted outer barriers create in the finite box)
-        ref = copy.copy(self); ref.field = 0.0; ref.solve(n_e + 4, n_h + 4)
-        r_e0, r_e1 = ref.psi_e[:, 0], ref.psi_e[:, 1]
-        r_hh, r_lh = ref.psi_hh[:, 0], ref.psi_lh[:, 0]
-
-        def follow(psi_ref, psis):
-            return int(np.argmax((psi_ref @ psis * self.dz) ** 2))
-
+        # For each field take the LOWEST states localised inside the wells
+        # (active_states). This ignores spurious states that the tilted outer
+        # barriers create near the box edges, and always finds the true
+        # (field-shifted) ground state, also in wide wells.
         for F in fields:
             sv = copy.copy(self)
             sv.field = F
-            sv.solve(n_e + 4, n_h + 4)
-            e0, e1 = follow(r_e0, sv.psi_e), follow(r_e1, sv.psi_e)
-            ih, il = follow(r_hh, sv.psi_hh), follow(r_lh, sv.psi_lh)
+            sv.solve(n_e + 4, n_h + 4)          # extra states: spurious ones are skipped
             ie = sv.active_states(sv.psi_e)
-            res["Ee"].append(sv.Ee[ie[:n_e]]); res["Ehh"].append(sv.Ehh[sv.active_states(sv.psi_hh)[:n_h]])
-            res["Elh"].append(sv.Elh[sv.active_states(sv.psi_lh)[:n_h]])
+            ihh = sv.active_states(sv.psi_hh)
+            ilh = sv.active_states(sv.psi_lh)
+            e0, e1, ih, il = ie[0], ie[1], ihh[0], ilh[0]
+            res["Ee"].append(sv.Ee[ie[:n_e]]); res["Ehh"].append(sv.Ehh[ihh[:n_h]])
+            res["Elh"].append(sv.Elh[ilh[:n_h]])
             res["E_e0hh0"].append(sv.Ee[e0] - sv.Ehh[ih])
             res["ov_e0hh0"].append((np.sum(sv.psi_e[:, e0] * sv.psi_hh[:, ih]) * sv.dz) ** 2)
             res["E_e0lh0"].append(sv.Ee[e0] - sv.Elh[il])
