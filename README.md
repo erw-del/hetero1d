@@ -4,7 +4,7 @@
 **Try it in your browser, no installation:**
 - [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/erw-del/hetero1d/blob/main/hetero1d_applications.ipynb) **Real applications**: lasers, QWIP, modulator, RTD, superlattice, HEMT, Landau levels, tilted-field double well
 - [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/erw-del/hetero1d/blob/main/harrison_comparison.ipynb) **Validation**: key results from Harrison & Valavanis, *Quantum Wells, Wires and Dots* (4th ed.), one per chapter
-- 
+ 
 **A complete 1D semiconductor heterostructure solver in Python.**
   
 Design quantum wells, multiple wells, superlattices or any layer stack from
