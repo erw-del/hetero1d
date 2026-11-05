@@ -47,6 +47,7 @@ import copy
 import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import eigsh
+from scipy.linalg import eigh_tridiagonal
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -445,11 +446,11 @@ class Solver:
         t = HB2M0 / dz**2
         d = t * (inv_m[:-1] + inv_m[1:]) + V[1:-1]
         o = -t * inv_m[1:-1]
-        H = sp.diags([o, d, o], [-1, 0, 1], format="csc")
-        k = min(nstates, H.shape[0] - 2)
-        E, psi = eigsh(H, k=k, sigma=V.min() - 1e-3, which="LM")
-        order = np.argsort(E)
-        E, psi = E[order], psi[:, order]
+        # exact, deterministic LAPACK solver for the tridiagonal Hamiltonian
+        # (ARPACK/eigsh uses a random start vector: results could depend on
+        #  the call history when states are nearly degenerate)
+        k = min(nstates, len(d) - 2)
+        E, psi = eigh_tridiagonal(d, o, select="i", select_range=(0, k - 1))
         full = np.zeros((len(self.z), k))
         full[1:-1] = psi
         full /= np.sqrt(np.sum(full**2, axis=0) * dz)
@@ -466,10 +467,20 @@ class Solver:
         Eh, self.psi_hh = self._solve(-self.Ev + self.V_dia(self.mhh_par), self.mhh, n_h)
         El, self.psi_lh = self._solve(-self.Ev + self.V_dia(self.mlh_par), self.mlh, n_h)
         self.Ehh, self.Elh = -Eh, -El
-        # bound = below the lower of the two outer barrier edges
-        self.e_bound = self.Ee < min(self.Ec[0], self.Ec[-1])
-        self.hh_bound = self.Ehh > max(self.Ev[0], self.Ev[-1])
-        self.lh_bound = self.Elh > max(self.Ev[0], self.Ev[-1])
+        if self.field == 0:
+            # bound = below the lower of the two outer barrier edges
+            self.e_bound = self.Ee < min(self.Ec[0], self.Ec[-1])
+            self.hh_bound = self.Ehh > max(self.Ev[0], self.Ev[-1])
+            self.lh_bound = self.Elh > max(self.Ev[0], self.Ev[-1])
+        else:
+            # with an electric field the band edges at the two ends differ, so
+            # "bound" (quasi-bound) = mostly localised inside the inner layers
+            def localised(psi):
+                inner = (self.layer_index > 0) & (self.layer_index < len(self.s.layers) - 1)
+                return np.sum(psi[inner] ** 2, axis=0) * self.dz > 0.8
+            self.e_bound = localised(self.psi_e)
+            self.hh_bound = localised(self.psi_hh)
+            self.lh_bound = localised(self.psi_lh)
         return self
 
     # ---------------- state analysis ----------------
@@ -521,6 +532,11 @@ class Solver:
             lo, hi = (mid, hi) if ntot(mid) < n_target else (lo, mid)
         EF = 0.5 * (lo + hi)
         pops = m * DOS0 * kT * np.logaddexp(0, (EF - E) / kT) * 1e14   # cm^-2
+        if E.max() < EF + 5 * kT:
+            import warnings
+            warnings.warn("fermi_level: the highest computed state is less than 5 kT above "
+                          "the Fermi level; call solve() with more states (n_e) for accurate "
+                          "populations.", RuntimeWarning, stacklevel=2)
         return EF, pops
 
     def isb_absorption(self, energies, n2d_cm2=1e11, gamma=0.005):
@@ -665,10 +681,20 @@ class Solver:
         return q, d, bands
 
     # ---------------- Schroedinger-Poisson ----------------
-    def schrodinger_poisson(self, n_e=8, mix=0.2, tol=1e-5, max_iter=300, verbose=True):
+    def schrodinger_poisson(self, n_e=8, mix=0.1, tol=1e-5, max_iter=600, verbose=True,
+                            right_bc="neumann"):
         """
         Self-consistent electron density for the layer dopings (donors fully
         ionised). Electrons from donors fill the subbands (charge neutral).
+
+        The number of states is increased automatically until the highest
+        state lies more than 10 kT above the Fermi level (no truncation error).
+
+        Boundary conditions for the Hartree potential:
+          left end:  V = 0 (reference)
+          right end: right_bc = "neumann"   zero field (default; correct for a
+                                            thick undoped buffer, e.g. HEMTs)
+                     right_bc = "dirichlet" V = 0 (symmetric, thin outer layers)
         """
         n2d = np.sum(self.Nd) * self.dz * 1e14            # cm^-2
         if n2d <= 0:
@@ -676,18 +702,37 @@ class Solver:
         self.VH = np.zeros_like(self.z)
         dz = self.dz
         eps_half = 0.5 * (self.eps[:-1] + self.eps[1:])
-        main = (eps_half[:-1] + eps_half[1:]) / dz**2
-        off = -eps_half[1:-1] / dz**2
-        A = sp.diags([off, main, off], [-1, 0, 1], format="csc")
         from scipy.sparse.linalg import splu
+        if right_bc == "dirichlet":
+            main = (eps_half[:-1] + eps_half[1:]) / dz**2
+            off = -eps_half[1:-1] / dz**2
+            sl = slice(1, -1)                              # unknowns: interior nodes
+        elif right_bc == "neumann":
+            # unknowns: nodes 1..N-1; last node is a half cell with zero outward field
+            main = np.append((eps_half[:-1] + eps_half[1:]) / dz**2, 2 * eps_half[-1] / dz**2)
+            off_up = -eps_half[1:] / dz**2
+            off_lo = off_up.copy()
+            off_lo[-1] *= 2                                 # half-cell row
+            sl = slice(1, None)
+        else:
+            raise ValueError("right_bc must be 'neumann' or 'dirichlet'")
+        if right_bc == "dirichlet":
+            A = sp.diags([off, main, off], [-1, 0, 1], format="csc")
+        else:
+            A = sp.diags([off_lo, main, off_up], [-1, 0, 1], format="csc")
         lu = splu(A)
+        kT = KB * self.T
         for it in range(max_iter):
             self.Ee, self.psi_e = self._solve(self.Ec, self.me, n_e)
             EF, pops = self.fermi_level(n2d)
+            while self.Ee[-1] < EF + 10 * kT and n_e < 200:   # enough empty states?
+                n_e += 4
+                self.Ee, self.psi_e = self._solve(self.Ec, self.me, n_e)
+                EF, pops = self.fermi_level(n2d)
             n3d = np.sum(pops * 1e-14 * self.psi_e**2, axis=1)       # nm^-3
             rhs = POISSON * (n3d - self.Nd)
             Vnew = np.zeros_like(self.z)
-            Vnew[1:-1] = lu.solve(rhs[1:-1])        # -d/dz(eps dV/dz) = rhs  -> V
+            Vnew[sl] = lu.solve(rhs[sl])             # -d/dz(eps dV/dz) = rhs  -> V
             err = np.max(np.abs(Vnew - self.VH))
             self.VH = (1 - mix) * self.VH + mix * Vnew
             if err < tol:
