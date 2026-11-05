@@ -29,3 +29,16 @@ def test_landau_spacing():
     L = sol.landau_levels()
     m = sol.mass_average(sol.psi_e[:, 0], sol.me)
     assert abs(L[0]["hwc"] - 1.1576766e-4 * 5 / m) < 1e-9
+
+
+def test_exciton_limits_and_trend():
+    """binding between bulk Ry and 2D 4Ry, and stronger in narrower wells"""
+    E = []
+    for Lw in (4, 10, 20):
+        sol = Solver(Structure.single_well(Lw=Lw, Lb=30), T=4.2, dz=0.05).solve(2, 2)
+        x = sol.exciton()
+        mu, eps = x["mu"], x["eps"]
+        Ry = 1.439964**2 * mu / (4 * HB2M0 * eps**2) * 1000      # meV
+        assert Ry < x["Eb_meV"] < 4 * Ry
+        E.append(x["Eb_meV"])
+    assert E[0] > E[1] > E[2]
