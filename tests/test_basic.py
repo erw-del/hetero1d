@@ -42,3 +42,30 @@ def test_exciton_limits_and_trend():
         assert Ry < x["Eb_meV"] < 4 * Ry
         E.append(x["Eb_meV"])
     assert E[0] > E[1] > E[2]
+
+
+def test_potentials_match_exact_solutions():
+    """V_ext shapes: harmonic oscillator and triangular (Airy) well"""
+    from scipy.special import ai_zeros
+    from hetero1d import potentials
+    box = Structure().add("GaAs", 200)
+    sol = Solver(box, V_ext=potentials.parabolic(10, center=100)).solve(4, 1)
+    E = (sol.Ee - sol.Ec.min()) * 1000
+    assert np.allclose(E[:4], [5, 15, 25, 35], atol=0.01)
+    sol = Solver(Structure().add("GaAs", 150), dz=0.05, V_ext=potentials.triangular(50)).solve(3, 1)
+    E = (sol.Ee - sol.Ec.min()) * 1000
+    exact = (HB2M0 / 0.067) ** (1 / 3) * (50e-4) ** (2 / 3) * (-ai_zeros(3)[0]) * 1000
+    assert np.allclose(E[:3], exact, atol=0.01)
+
+
+def test_graded_geometries():
+    """builders: mirror symmetry, equal-width wells degenerate, holes confined"""
+    lev = lambda s: (Solver(s).solve(3, 3).Ee[:3])
+    a = lev(Structure.triangular_well(Lw=20))
+    b = lev(Structure.triangular_well(Lw=20, wall="right"))
+    assert np.allclose(a, b, atol=1e-6)
+    sol = Solver(Structure.multi_graded_well(3, "parabolic", Lw=20, gap=5)).solve(3, 3)
+    assert (sol.Ee[2] - sol.Ee[0]) * 1000 < 0.1            # three nearly degenerate levels
+    sol = Solver(Structure.graded_well("cosine", Lw=30)).solve(2, 2)
+    assert (sol.Ee[1] - sol.Ee[0]) * 1000 > 10              # a real single well, not a double well
+    assert sol.hh_bound[0]                                    # holes confined in graded wells
