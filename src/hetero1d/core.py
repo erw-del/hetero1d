@@ -846,6 +846,50 @@ class Solver:
         self.z0 = z0_save
         return np.array(out)
 
+    # ---------------- excitons ----------------
+    def exciton(self, ie=0, ih=0, hole="hh"):
+        """
+        Variational 1s exciton for electron subband ie and hole subband ih
+        (hole = "hh" or "lh"). Trial function
+            Psi = psi_e(ze) psi_h(zh) exp(-sqrt(r_par^2 + (ze - zh)^2) / lambda),
+        with the in-plane integrals done analytically:
+            E(lambda) = hbar^2/(2 mu lambda^2) - e^2/(4 pi eps) P/N,
+            P = Int G(z) exp(-2|z|/lambda) dz,
+            N = Int G(z) exp(-2|z|/lambda) (|z| + lambda/2) dz,
+            G(z) = Int psi_e^2(z') psi_h^2(z' - z) dz'.
+        Limits: bulk -Ry*, strict 2D -4 Ry*. Masses (electron, in-plane hole)
+        and permittivity are averaged over the wavefunctions.
+        Returns dict: Eb_meV (binding energy, positive = bound), lambda_nm,
+        E_transition_eV (exciton line = free e-h transition - Eb), mu, eps.
+        Note: one-parameter trial function and Luttinger in-plane hole mass,
+        so binding energies are a lower bound (trends are reliable).
+        """
+        from scipy.optimize import minimize_scalar
+        if hole == "hh":
+            psi_h, Eh, mpar = self.psi_hh, self.Ehh, self.mhh_par
+        elif hole == "lh":
+            psi_h, Eh, mpar = self.psi_lh, self.Elh, self.mlh_par
+        else:
+            raise ValueError('hole must be "hh" or "lh"')
+        dz = self.dz
+        pe, ph = self.psi_e[:, ie] ** 2, psi_h[:, ih] ** 2
+        me = np.sum(pe * self.me) * dz
+        mh = np.sum(ph * mpar) * dz
+        mu = me * mh / (me + mh)
+        eps = np.sum(pe * self.eps) * dz
+        kc = 1.439964 / eps                       # e^2/(4 pi eps0 eps) in eV nm
+        G = np.correlate(pe, ph, mode="full") * dz
+        a = np.abs((np.arange(len(G)) - (len(self.z) - 1)) * dz)
+
+        def E(lam):
+            w = np.exp(-2 * a / lam)
+            return HB2M0 / (mu * lam**2) - kc * np.sum(G * w) / np.sum(G * w * (a + lam / 2))
+
+        r = minimize_scalar(E, bounds=(0.5, 80.0), method="bounded", options={"xatol": 1e-5})
+        Eb = -r.fun
+        return {"Eb_meV": Eb * 1000, "lambda_nm": r.x,
+                "E_transition_eV": self.Ee[ie] - Eh[ih] - Eb, "mu": mu, "eps": eps}
+
     # ---------------- electric field sweep ----------------
     def active_states(self, psi, threshold=0.5):
         """
@@ -987,6 +1031,14 @@ class Solver:
             print("  e - h      E (eV)   lambda (nm)  |<e|h>|^2")
             for t in ib[:8]:
                 print(f"  e{t['e']}-{t['band']}{t['h']}   {t['E']:8.4f}   {t['lam_nm']:9.1f}   {t['overlap2']:8.4f}")
+
+        if ib and self.e_bound[0] and self.hh_bound[0]:
+            try:
+                x = self.exciton()
+                print(f"\nExciton e0-hh0 (variational): binding {x['Eb_meV']:.2f} meV, "
+                      f"radius {x['lambda_nm']:.1f} nm, exciton line {x['E_transition_eV']:.4f} eV")
+            except Exception:
+                pass
 
         lo = self.lo_phonon_rates()
         if lo:
