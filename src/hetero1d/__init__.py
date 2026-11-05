@@ -15,7 +15,7 @@ from .core import (
     BINARIES, TERNARIES, QUATERNARIES,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 __all__ = ["Structure", "Layer", "Solver", "material", "add_material",
            "list_materials", "lattice_matched", "BINARIES", "TERNARIES",
            "QUATERNARIES", "__version__"]

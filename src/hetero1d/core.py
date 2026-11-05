@@ -383,7 +383,8 @@ class Structure:
 # Solver
 # ---------------------------------------------------------------------------
 class Solver:
-    def __init__(self, structure, T=300.0, field=0.0, dz=0.1, Bz=0.0, Bpar=0.0, z0=None):
+    def __init__(self, structure, T=300.0, field=0.0, dz=0.1, Bz=0.0, Bpar=0.0, z0=None,
+                 V_ext=None):
         """
         field: electric field along z in kV/cm (positive tilts the bands up to
                the right for electrons).
@@ -392,6 +393,10 @@ class Solver:
                term (hbar k_y + e B z)^2 / 2m.  z0 = -hbar k_y / (e B) is the
                orbit centre (nm); default = centre of the structure.
         dz:    grid step (nm).
+        V_ext: optional extra electrostatic potential energy for electrons,
+               a function V_ext(z) -> eV with z in nm (z = 0 at the left edge).
+               It shifts Ec and Ev together, e.g. piezoelectric / built-in
+               fields that differ from layer to layer, gate potentials.
         """
         self.s = structure
         self.T = T
@@ -399,6 +404,7 @@ class Solver:
         self.dz = dz
         self.Bz = Bz
         self.Bpar = Bpar
+        self.V_ext = V_ext
         self.VH = None          # Hartree potential (Schroedinger-Poisson)
         self._build_grid()
         self.z0 = self.z[-1] / 2 if z0 is None else z0
@@ -426,8 +432,12 @@ class Solver:
 
     @property
     def Ufield(self):
-        """potential energy of the field (eV), zero at the structure centre"""
-        return self.field * 1e-4 * (self.z - self.z[-1] / 2)
+        """potential energy of the field (eV), zero at the structure centre,
+        plus the optional user potential V_ext(z)"""
+        U = self.field * 1e-4 * (self.z - self.z[-1] / 2)
+        if self.V_ext is not None:
+            U = U + np.asarray(self.V_ext(self.z), dtype=float)
+        return U
 
     @property
     def Ec(self):
