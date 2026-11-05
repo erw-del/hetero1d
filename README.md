@@ -38,21 +38,13 @@ finite differences with position-dependent mass.
 ---
 
 ## Installation
-Directly from GitHub:
+```bash
+pip install hetero1d
+```
+or the latest version from GitHub:
 ```bash
 pip install git+https://github.com/erw-del/hetero1d.git
 ```
-or download the code, then inside the folder:
-```bash
-pip install -e .
-```
-Requires Python ≥ 3.8, numpy, scipy, matplotlib (installed automatically).
-
-Run all built-in examples (saves 8 figures):
-```bash
-hetero1d-demo
-```
-
 ---
 
 ## Quick start
