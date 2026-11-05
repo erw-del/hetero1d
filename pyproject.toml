@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hetero1d"                      # must be unique on PyPI !
-version = "0.1.1"
+version = "0.1.2"
 description = "1D semiconductor heterostructure solver: quantum wells, superlattices, electric and magnetic fields"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -26,6 +26,9 @@ test = ["pytest"]
 
 [project.urls]
 Homepage = "https://github.com/erw-del/hetero1d"
+"Colab demo" = "https://colab.research.google.com/github/erw-del/hetero1d/blob/main/hetero1d_applications.ipynb"
+Source = "https://github.com/erw-del/hetero1d"
+Issues = "https://github.com/erw-del/hetero1d/issues"
 
 [project.scripts]
 hetero1d-demo = "hetero1d.examples:main"
