@@ -1,19 +1,51 @@
 # hetero1d
-[![PyPI](https://img.shields.io/pypi/v/hetero1d)](https://pypi.org/project/hetero1d/)
+[![PyPI](https://img.shields.io/pypi/v/hetero1d?cacheSeconds=3600)](https://pypi.org/project/hetero1d/)
 
 **Try it in your browser, no installation:**
 - [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/erw-del/hetero1d/blob/main/hetero1d_applications.ipynb) **Real applications**: lasers, QWIP, modulator, RTD, superlattice, HEMT, Landau levels, tilted-field double well
-- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/erw-del/hetero1d/blob/main/harrison_reproduction.ipynb) **Validation**: key results from Harrison & Valavanis, *Quantum Wells, Wires and Dots* (4th ed.), one per chapter
+- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/erw-del/hetero1d/blob/main/harrison_comparison.ipynb) **Validation**: key results from Harrison & Valavanis, *Quantum Wells, Wires and Dots* (4th ed.), one per chapter
+- 
 **A complete 1D semiconductor heterostructure solver in Python.**
+  
 Design quantum wells, multiple wells, superlattices or any layer stack from
 III-V materials and compute electronic, optical, transport and magneto-optical
 properties: under electric and magnetic fields, at any temperature, with or
 without doping.
 
 Method: effective-mass envelope-function approximation, BenDaniel-Duke
-finite differences with position-dependent mass.
+with position-dependent mass.
 
 ---
+## Any well shape in one line
+
+![Built-in geometries](examples/geometries.png)
+
+```python
+from hetero1d import Structure, Solver, potentials
+
+# real grown structures (graded alloy: electrons AND holes confined)
+Structure.parabolic_well(Lw=40)                          # parabolic
+Structure.triangular_well(Lw=20)                         # triangular (wall="right" mirrors it)
+Structure.v_well(Lw=30)                                  # V-shaped
+Structure.step_well(Lw=6, Ls=6)                          # asymmetric step well
+Structure.double_well(Lw=10, Lb=2)                       # coupled double well
+Structure.sawtooth(4, Lw=20)                             # sawtooth superlattice
+Structure.multi_graded_well(3, "parabolic", Lw=20, gap=5)
+Structure.graded_well(lambda u: abs(2*u - 1)**3, Lw=30)  # your own shape
+Structure.from_profile("AlGaAs", z, x)                   # measured composition profile
+
+# formula potentials for V_ext (electrostatic: electrons only)
+box = Structure().add("GaAs", 200)
+sol = Solver(box, V_ext=potentials.parabolic(hw_meV=10, center=100)).solve()
+```
+
+Available potentials: `parabolic`, `triangular`, `v_shape`, `sawtooth`, `step`,
+`square_well`, `poschl_teller`, `gaussian`, `uniform_field`, `combine`.
+They match the exact analytic solutions (harmonic oscillator, Airy, Pöschl–Teller)
+to better than 0.01 meV.
+
+Full examples: [`examples/geometries.py`](examples/geometries.py) ·
+[`examples/arbitrary_potentials.py`](examples/arbitrary_potentials.py)
 
 ## What it can compute
 
