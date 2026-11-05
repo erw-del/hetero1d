@@ -279,6 +279,18 @@ def lattice_matched(name, substrate="InP", fixed=None, T=300.0):
 # ---------------------------------------------------------------------------
 # Structure
 # ---------------------------------------------------------------------------
+# Well shapes for Structure.shaped_well: f(u), u = 0..1 across the well -> 0 (bottom) .. 1 (top)
+SHAPES = {
+    "square": lambda u: 0.0,
+    "parabolic": lambda u: (2 * u - 1) ** 2,
+    "triangular": lambda u: u,
+    "triangular_right": lambda u: 1 - u,
+    "v": lambda u: abs(2 * u - 1),
+    "half_parabolic": lambda u: u ** 2,
+    "cosine": lambda u: 0.5 * (1 + np.cos(2 * np.pi * u)),     # smooth well: 0 in the centre, 1 at the edges
+}
+
+
 class Layer:
     def __init__(self, material, thickness, x=None, doping=0.0, y=None, label=None):
         self.material = material
@@ -362,6 +374,159 @@ class Structure:
         s.period = [Layer(wn, Lw, wx, y=wy), Layer(bn, Lb, bx, y=by)]
         return s
 
+    # ---------- graded and shaped wells ----------
+    def add_graded(self, material, thickness, x=None, y=None, slice_nm=0.2, doping=0.0, label=None):
+        """
+        Append a section whose composition varies with position, built from thin
+        slices (default 0.2 nm). x and y may be numbers or functions of t, the
+        distance in nm from the start of the section, e.g.
+            s.add_graded("AlGaAs", 20, x=lambda t: 0.3 * t / 20)     # linear grade
+        All slices share one label, so describe() and region_probabilities()
+        treat the section as one region.
+        """
+        self._ngraded = getattr(self, "_ngraded", 0) + 1
+        label = label or f"graded {material} #{self._ngraded}"
+        n = max(1, int(round(thickness / slice_nm)))
+        h = thickness / n
+        for k in range(n):
+            t = (k + 0.5) * h
+            xv = x(t) if callable(x) else x
+            yv = y(t) if callable(y) else y
+            xv = None if xv is None else round(float(xv), 5)
+            yv = None if yv is None else round(float(yv), 5)
+            self.layers.append(Layer(material, h, xv, doping, yv, label=label))
+        return self
+
+    @classmethod
+    def shaped_well(cls, shape="parabolic", n_wells=1, Lw=40.0, alloy="AlGaAs", x_min=0.0, x_max=0.3,
+                    Lb=20.0, gap=0.0, slice_nm=0.2, **kw):
+        """
+        Wells of a given shape made of a graded alloy (real material, so electrons
+        AND holes are confined):
+          shape: "parabolic", "triangular" (steep wall left, slope rising to the right),
+                 "triangular_right" (mirror), "v", "half_parabolic", "square",
+                 or a function f(u) -> 0..1 of the relative position u = 0..1 in the well
+          composition in the well: x = x_min + (x_max - x_min) * f(u)
+          barriers: alloy with x = x_max; Lb = outer barriers, gap = barriers between wells
+        Examples:
+          Structure.shaped_well("parabolic", Lw=40)                     # graded parabolic well
+          Structure.shaped_well("triangular", n_wells=4, Lw=20)         # sawtooth of 4 triangles
+          Structure.shaped_well("v", n_wells=3, Lw=20, gap=5)           # three V-shaped wells
+        """
+        f = SHAPES[shape] if isinstance(shape, str) else shape
+        sname = shape if isinstance(shape, str) else "custom"
+        s = cls(name=kw.pop("name", f"{n_wells} {sname} well(s), {alloy} x={x_min:g}-{x_max:g}"), **kw)
+        s.add(alloy, Lb, x=x_max)
+        for w in range(n_wells):
+            s.add_graded(alloy, Lw, x=lambda t: x_min + (x_max - x_min) * float(f(t / Lw)),
+                         slice_nm=slice_nm, label=f"{sname} well {w + 1}")
+            if gap > 0 and w < n_wells - 1:
+                s.add(alloy, gap, x=x_max)
+        s.add(alloy, Lb, x=x_max)
+        if n_wells > 1:                                   # one period, for minibands()
+            per = [l for l in s.layers if l.label == f"{sname} well 1"]
+            if gap > 0:
+                per = per + [Layer(alloy, gap, x_max)]
+            s.period = per
+        return s
+
+    @property
+    def regions(self):
+        """Logical regions: graded sections count as one region.
+        List of dicts with name, start, end (nm) and layer indices."""
+        out, z = [], 0.0
+        for i, l in enumerate(self.layers):
+            if l.label is not None and out and out[-1]["label"] == l.label:
+                out[-1]["end"] = z + l.thickness
+                out[-1]["layers"].append(i)
+            else:
+                out.append(dict(name=l.label or str(l), label=l.label, start=z,
+                                end=z + l.thickness, layers=[i]))
+            z += l.thickness
+        return out
+
+
+    # ---------- simple named geometries (wrappers around shaped_well) ----------
+    def add_shaped_well(self, shape, Lw, alloy="AlGaAs", x_center=0.0, x_edge=0.3, slice_nm=0.2, label=None):
+        """Append one graded well of the given shape (a name from SHAPES or a
+        function u -> 0..1): composition from x_center (bottom) to x_edge (top)."""
+        f = SHAPES[shape] if isinstance(shape, str) else shape
+        name = shape if isinstance(shape, str) else "custom"
+        return self.add_graded(alloy, Lw, x=lambda t: x_center + (x_edge - x_center) * float(f(t / Lw)),
+                               slice_nm=slice_nm, label=label or f"{name} well")
+
+    @classmethod
+    def graded_well(cls, shape="parabolic", Lw=40.0, Lb=20.0, alloy="AlGaAs",
+                    x_center=0.0, x_edge=0.3, slice_nm=0.2, **kw):
+        """One graded well of any shape between barriers of composition x_edge.
+          Structure.graded_well("parabolic", Lw=40)
+          Structure.graded_well(lambda u: u**3, Lw=30)          # custom shape
+        Wells with the HIGHER alloy fraction (e.g. InGaAs in GaAs): x_center=0.2, x_edge=0.0."""
+        return cls.shaped_well(shape, 1, Lw, alloy, x_center, x_edge, Lb, 0.0, slice_nm, **kw)
+
+    @classmethod
+    def parabolic_well(cls, Lw=40.0, Lb=20.0, alloy="AlGaAs", x_center=0.0, x_edge=0.3, **kw):
+        """Parabolic graded well (nearly equally spaced levels)."""
+        return cls.graded_well("parabolic", Lw, Lb, alloy, x_center, x_edge, **kw)
+
+    @classmethod
+    def triangular_well(cls, Lw=20.0, Lb=20.0, alloy="AlGaAs", x_center=0.0, x_edge=0.3, wall="left", **kw):
+        """Triangular graded well: abrupt wall on one side (wall="left" or "right"), linear grade on the other."""
+        return cls.graded_well("triangular" if wall == "left" else "triangular_right",
+                               Lw, Lb, alloy, x_center, x_edge, **kw)
+
+    @classmethod
+    def v_well(cls, Lw=30.0, Lb=20.0, alloy="AlGaAs", x_center=0.0, x_edge=0.3, **kw):
+        """Symmetric V-shaped graded well."""
+        return cls.graded_well("v", Lw, Lb, alloy, x_center, x_edge, **kw)
+
+    @classmethod
+    def multi_graded_well(cls, n_wells, shape="parabolic", Lw=20.0, gap=5.0, Lb_out=20.0,
+                          alloy="AlGaAs", x_center=0.0, x_edge=0.3, slice_nm=0.2, **kw):
+        """n identical graded wells separated by barriers of width gap (0 = touching)."""
+        return cls.shaped_well(shape, n_wells, Lw, alloy, x_center, x_edge, Lb_out, gap, slice_nm, **kw)
+
+    @classmethod
+    def sawtooth(cls, n_wells=4, Lw=20.0, gap=0.0, Lb_out=20.0, alloy="AlGaAs",
+                 x_center=0.0, x_edge=0.3, **kw):
+        """Sawtooth: n triangular graded wells in a row."""
+        return cls.shaped_well("triangular", n_wells, Lw, alloy, x_center, x_edge, Lb_out, gap,
+                               name=kw.pop("name", f"sawtooth, {n_wells} periods"), **kw)
+
+    @classmethod
+    def step_well(cls, well=("GaAs",), step=("AlGaAs", 0.15), barrier=("AlGaAs", 0.3),
+                  Lw=6.0, Ls=6.0, Lb=20.0, **kw):
+        """Asymmetric step well: barrier | deep well Lw | step layer Ls | barrier
+        (nonlinear optics, Stark tuning)."""
+        s = cls(name=kw.pop("name", "step well"), **kw)
+        s._add_spec(barrier, Lb)._add_spec(well, Lw)._add_spec(step, Ls)._add_spec(barrier, Lb)
+        return s
+
+    @classmethod
+    def double_well(cls, well=("GaAs",), barrier=("AlGaAs", 0.3), Lw=10.0, Lb=2.0, Lb_out=20.0, **kw):
+        """Two wells (equal, or Lw=(w1, w2) for different widths) separated by one barrier Lb."""
+        Lw = list(np.broadcast_to(Lw, 2))
+        return cls.multi_well(2, well, barrier, Lw, Lb, Lb_out, name=kw.pop("name", "double well"), **kw)
+
+    @classmethod
+    def from_profile(cls, alloy, z, x, Lb=0.0, x_barrier=None, **kw):
+        """Structure from a measured or tabulated composition profile: arrays z (nm,
+        increasing) and x (alloy fraction); optional flat barriers of width Lb."""
+        z = np.asarray(z, float); x = np.asarray(x, float)
+        edges = np.concatenate([[z[0]], 0.5 * (z[1:] + z[:-1]), [z[-1]]])
+        s = cls(name=kw.pop("name", "profile"), **kw)
+        xl = x[0] if x_barrier is None else x_barrier
+        xr = x[-1] if x_barrier is None else x_barrier
+        if Lb > 0:
+            s.add(alloy, Lb, xl)
+        for k in range(len(z)):
+            t = edges[k + 1] - edges[k]
+            if t > 1e-9:
+                s.layers.append(Layer(alloy, t, round(float(np.clip(x[k], 0, 1)), 5), label="profile"))
+        if Lb > 0:
+            s.add(alloy, Lb, xr)
+        return s
+
     @property
     def total_thickness(self):
         return sum(l.thickness for l in self.layers)
@@ -371,14 +536,27 @@ class Structure:
         print(f"\nStructure: {self.name}   (total {self.total_thickness:g} nm, T = {T:g} K, "
               f"substrate {self.substrate})")
         print("  #   layer                              Ec (eV)  Ev (eV)  Eg (eV)  me      mhh    mlh    g_e     mismatch")
-        for i, l in enumerate(self.layers):
-            p = l.params(T)
-            mis = (p["a"] - a_sub) / a_sub * 100
-            warn = "  <- strained (not modelled)" if abs(mis) > 0.5 else ""
-            if p.get("approx"):
-                warn += "  [approx. parameters]"
-            print(f"  {i:<3d} {str(l):34s} {p['Ec']:8.4f} {p['Ev']:8.4f} {p['Eg']:7.4f} "
-                  f"{p['me']:7.4f} {p['mhh']:6.3f} {p['mlh']:6.3f} {p['g']:7.3f} {mis:7.2f}%{warn}")
+        for r, reg in enumerate(self.regions):
+            if len(reg["layers"]) == 1:
+                l = self.layers[reg["layers"][0]]
+                p = l.params(T)
+                mis = (p["a"] - a_sub) / a_sub * 100
+                warn = "  <- strained (not modelled)" if abs(mis) > 0.5 else ""
+                if p.get("approx"):
+                    warn += "  [approx. parameters]"
+                print(f"  {r:<3d} {str(l):34s} {p['Ec']:8.4f} {p['Ev']:8.4f} {p['Eg']:7.4f} "
+                      f"{p['me']:7.4f} {p['mhh']:6.3f} {p['mlh']:6.3f} {p['g']:7.3f} {mis:7.2f}%{warn}")
+            else:                                          # graded section: one summary line
+                ls = [self.layers[i] for i in reg["layers"]]
+                ps = [l.params(T) for l in ls]
+                xs = [l.x for l in ls if l.x is not None]
+                xr = f" x = {min(xs):.3f}..{max(xs):.3f}" if xs else ""
+                txt = f"{reg['name']} {reg['end'] - reg['start']:g} nm"
+                mis = max(abs(p["a"] - a_sub) / a_sub * 100 for p in ps)
+                warn = "  <- strained (not modelled)" if mis > 0.5 else ""
+                Ec = [p["Ec"] for p in ps]; Ev = [p["Ev"] for p in ps]
+                print(f"  {r:<3d} {txt:34s} Ec {min(Ec):.3f}..{max(Ec):.3f}, Ev {min(Ev):.3f}..{max(Ev):.3f},"
+                      f" graded{xr}, {len(ls)} slices{warn}")
 # ---------------------------------------------------------------------------
 # Solver
 # ---------------------------------------------------------------------------
@@ -415,8 +593,11 @@ class Solver:
         n = int(round(L / self.dz)) + 1
         self.z = np.linspace(0, L, n)
         self.dz = self.z[1] - self.z[0]
-        edges = np.cumsum([0] + [l.thickness for l in self.s.layers])
-        idx = np.clip(np.searchsorted(edges, self.z, side="right") - 1, 0, len(self.s.layers) - 1)
+        # round edges and grid to 1e-9 nm: summing many thin layers (graded sections)
+        # gives round-off such as 24.9999999 instead of 25, which could move a grid
+        # point lying exactly on an interface into the wrong layer
+        edges = np.round(np.cumsum([0] + [l.thickness for l in self.s.layers]), 9)
+        idx = np.clip(np.searchsorted(edges, np.round(self.z, 9), side="right") - 1, 0, len(self.s.layers) - 1)
         self.layer_index = idx
         self.layer_edges = edges
 
@@ -499,6 +680,15 @@ class Solver:
         for i in range(len(self.s.layers)):
             P[i] = np.sum(psi[self.layer_index == i] ** 2) * self.dz
         return P
+
+    def region_probabilities(self, psi):
+        """Probability in each logical region (graded sections count as one).
+        Returns a list of (region name, probability)."""
+        out = []
+        for reg in self.s.regions:
+            inside = (self.z >= reg["start"]) & (self.z < reg["end"])
+            out.append((reg["name"], float(np.sum(psi[inside] ** 2) * self.dz)))
+        return out
 
     def mass_average(self, psi, m):
         return np.sum(psi**2 * m) * self.dz
