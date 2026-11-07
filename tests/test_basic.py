@@ -91,17 +91,77 @@ def test_strain():
 
 
 def test_nonparabolic():
-    """energy-dependent mass: default unchanged, matches the exact solution, lowers high levels"""
+    """energy-dependent mass: default unchanged, both Kane models match exact solutions"""
     s = Structure.single_well(well="GaAs", barrier=("AlGaAs", 0.3), Lw=10, Lb=30)
     par = Solver(s, dz=0.02).solve(3, 1)
-    npb = Solver(s, dz=0.02, nonparabolic=True).solve(3, 1)
-    E_par = (par.Ee - par.Ec.min()) * 1000
-    E_np = (npb.Ee - npb.Ec.min()) * 1000
-    assert abs(E_np[1] - 117.45) < 0.05          # exact energy-dependent BDD solution
-    assert abs(E_np[0] - 31.41) < 0.05
-    assert E_np[1] < E_par[1] and E_np[2] < E_par[2]
+    k2 = Solver(s, dz=0.02, nonparabolic="kane2").solve(3, 1)
+    k3 = Solver(s, dz=0.02, nonparabolic=True).solve(3, 1)          # True = three-band Kane
+    lev = lambda v: (v.Ee - v.Ec.min()) * 1000
+    assert abs(lev(k2)[1] - 117.45) < 0.05 and abs(lev(k2)[0] - 31.41) < 0.05   # exact, two-band
+    assert abs(lev(k3)[1] - 117.66) < 0.05 and abs(lev(k3)[2] - 233.25) < 0.05  # exact, three-band
+    assert lev(k3)[2] < lev(par)[2]
     assert abs(Solver(s).solve(1, 1).Ee[0] - Solver(s, nonparabolic=False).solve(1, 1).Ee[0]) < 1e-12
-    S = npb.psi_e.T @ npb.psi_e * npb.dz                                   # orthonormal states
+    S = k3.psi_e.T @ k3.psi_e * k3.dz                                    # orthonormal states
     assert np.allclose(S, np.eye(len(S)), atol=1e-10)
-    z02 = np.sum(npb.psi_e[:, 0] * npb.z * npb.psi_e[:, 2]) * npb.dz      # forbidden by parity
+    z02 = np.sum(k3.psi_e[:, 0] * k3.z * k3.psi_e[:, 2]) * k3.dz         # forbidden by parity
     assert abs(z02) < 1e-6
+
+
+def test_nonparabolic_transmission():
+    """transfer matrix with energy-dependent mass = exact single-barrier formula"""
+    from hetero1d import material
+    from hetero1d.core import HB2M0
+    sol = Solver(Structure().add("GaAs", 20).add("AlGaAs", 5, x=0.3).add("GaAs", 20), dz=0.01, nonparabolic=True)
+    w, b = material("GaAs"), material("AlGaAs", 0.3)
+    V0, Ek = b["Ec"] - w["Ec"], 0.05
+    r = lambda e, p: (2 / p["Eg"] + 1 / (p["Eg"] + p["Dso"])) / (2 / (p["Eg"] + e) + 1 / (p["Eg"] + p["Dso"] + e))
+    mw, mb = w["me"] * r(Ek, w), b["me"] * r(Ek - V0, b)
+    k, q = np.sqrt(mw * Ek / HB2M0), np.sqrt(mb * (V0 - Ek) / HB2M0)
+    a, c = k / mw, q / mb
+    T_exact = 1 / (1 + ((a**2 + c**2) / (2 * a * c)) ** 2 * np.sinh(q * 5) ** 2)
+    assert abs(sol.transmission(np.array([w["Ec"] + Ek]))[0] - T_exact) < 1e-6
+
+
+def test_strain_split_off():
+    """light hole coupled to the split-off band: In0.2GaAs hh-lh splitting ~90 meV"""
+    from hetero1d import material
+    from hetero1d.strain import layer_strain
+    d = layer_strain(material("InGaAs", 0.2), material("GaAs")["a"])
+    assert 80 < (d["dEhh"] - d["dElh"]) * 1000 < 95
+
+
+def test_thermal_lo_rates():
+    """thermal LO rates: cold limit = subband-bottom rate; hot electrons scatter below threshold"""
+    s = Structure.single_well(well="GaAs", barrier=("AlGaAs", 0.3), Lw=10, Lb=25)
+    sv = Solver(s, T=4.2).solve(3, 1)
+    cold = [r for r in sv.lo_phonon_rates() if (r["i"], r["f"]) == (1, 0)][0]["tau_ps"]
+    th = [r for r in sv.lo_phonon_rates(thermal=True, Te=4.2) if (r["i"], r["f"]) == (1, 0)][0]["tau_ps"]
+    assert abs(th - cold) / cold < 0.01
+    wide = Solver(Structure.single_well(well="GaAs", barrier=("AlGaAs", 0.3), Lw=25, Lb=25), T=300).solve(3, 1)
+    assert not any((r["i"], r["f"]) == (1, 0) for r in wide.lo_phonon_rates())   # below threshold: no cold rate
+    hot = [r for r in wide.lo_phonon_rates(thermal=True) if (r["i"], r["f"]) == (1, 0)][0]["tau_ps"]
+    assert abs(hot - 0.481) < 0.01                                              # converged value
+
+
+def test_gain():
+    """gain: absorption without carriers, transparency ~1e12 cm^-2, Bernard-Duraffourg"""
+    import warnings
+    warnings.simplefilter("ignore")
+    sol = Solver(Structure.single_well(well="GaAs", barrier=("AlGaAs", 0.3), Lw=8, Lb=25), T=300).solve(6, 10)
+    E = np.linspace(1.40, 1.75, 1200)
+    assert sol.gain(E, 0).max() < 0
+    g = sol.gain(E, 3e12)
+    assert 2500 < g.max() < 4500
+    dEF = sol.fermi_level(3e12)[0] - sol.hole_fermi_level(3e12)[0]
+    assert E[g > 0].max() < dEF + 0.002
+
+
+def test_schrodinger_poisson_runs():
+    """self-consistent doping works, with and without non-parabolicity"""
+    for npar in (False, True):
+        d = Structure()
+        d.add("AlGaAs", 30, x=0.3).add("AlGaAs", 10, x=0.3, doping=3e17).add("AlGaAs", 10, x=0.3)
+        d.add("GaAs", 15).add("AlGaAs", 10, x=0.3).add("AlGaAs", 10, x=0.3, doping=3e17).add("AlGaAs", 30, x=0.3)
+        sv = Solver(d, T=77, nonparabolic=npar).schrodinger_poisson(verbose=False)
+        sv.solve(4, 2)
+        assert sv.EF > sv.Ee[0]
