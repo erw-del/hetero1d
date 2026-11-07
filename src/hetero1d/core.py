@@ -153,16 +153,42 @@ CUSTOM = {}
 
 
 def add_material(name, Ec, Ev, me, mhh, mlh, eps_s, eps_inf=None, hwLO=0.036,
-                 a=5.65325, g=2.0, mhh_par=None, mlh_par=None):
-    """Add your own material (band edges in eV, masses in m0, g = electron g-factor)."""
+                 a=5.65325, g=2.0, mhh_par=None, mlh_par=None,
+                 C11=None, C12=None, ac=None, av=None, b=None):
+    """Add your own material (band edges in eV, masses in m0, g = electron g-factor).
+    For strain calculations also give C11, C12 (GPa) and a_c, a_v, b (eV);
+    without them the material is treated as unstrained."""
     CUSTOM[name] = dict(Ec=Ec, Ev=Ev, Eg=Ec - Ev, me=me, mhh=mhh, mlh=mlh,
                         mhh_par=mhh_par or mhh, mlh_par=mlh_par or mlh,
                         eps_s=eps_s, eps_inf=eps_inf or eps_s, hwLO=hwLO, a=a,
-                        g=g, Ep=np.nan, Dso=np.nan, approx=False)
+                        g=g, Ep=np.nan, Dso=np.nan, approx=False,
+                        C11=C11, C12=C12, ac=ac, av=av, b=b)
 
+
+
+# Elastic constants C11, C12 (GPa) and deformation potentials a_c, a_v, b (eV)
+# for strain (Vurgaftman, Meyer, Ram-Mohan 2001; nitrides zinc-blende, approximate).
+# a_v follows Vurgaftman's sign convention (negative); gap deformation a = a_c + a_v.
+ELASTIC = {
+    #         C11     C12     a_c     a_v     b
+    "GaAs": (1221.0, 566.0, -7.17, -1.16, -2.0),
+    "AlAs": (1250.0, 534.0, -5.64, -2.47, -2.3),
+    "InAs": (832.9,  452.6, -5.08, -1.00, -1.8),
+    "InP":  (1011.0, 561.0, -6.0,  -0.6,  -2.0),
+    "GaSb": (884.2,  402.6, -7.5,  -0.8,  -2.0),
+    "AlSb": (876.9,  434.1, -4.5,  -1.4,  -1.35),
+    "GaP":  (1405.0, 620.3, -8.2,  -1.7,  -1.6),
+    "AlP":  (1330.0, 630.0, -5.7,  -3.0,  -1.5),
+    "InSb": (684.7,  373.5, -6.94, -0.36, -2.0),
+    "GaN":  (293.0,  159.0, -6.71, -0.69, -2.0),
+    "AlN":  (304.0,  160.0, -4.5,  -4.9,  -1.7),
+    "InN":  (187.0,  125.0, -2.65, -0.7,  -1.2),
+}
+_SKEYS = ("C11", "C12", "ac", "av", "b")
 
 def _raw_binary(name, T):
     p = dict(zip(_KEYS, BINARIES[name]))
+    p.update(zip(_SKEYS, ELASTIC[name]))
     p["Eg"] = p["Eg0"] - p["alpha"] * T**2 / (T + p["beta"])
     return p
 
@@ -170,7 +196,7 @@ def _raw_binary(name, T):
 def _raw_ternary(name, x, T):
     A, B, bow, bow_v, bow_m, _ = TERNARIES[name]
     pa, pb = _raw_binary(A, T), _raw_binary(B, T)
-    p = {k: x * pa[k] + (1 - x) * pb[k] for k in _KEYS + ("Eg",)}
+    p = {k: x * pa[k] + (1 - x) * pb[k] for k in _KEYS + ("Eg",) + _SKEYS}
     p["Eg"] -= x * (1 - x) * bow(x)
     p["VBO"] -= x * (1 - x) * bow_v
     p["me"] -= x * (1 - x) * bow_m
@@ -179,7 +205,7 @@ def _raw_ternary(name, x, T):
 
 def _raw_quaternary(name, x, y, T):
     q = QUATERNARIES[name]
-    keys = _KEYS + ("Eg",)
+    keys = _KEYS + ("Eg",) + _SKEYS
     if q["kind"] == "AB-CD":
         def T3(entry, arg):
             tname, f = entry
@@ -239,7 +265,8 @@ def material(name, x=None, y=None, T=300.0):
                 mhh=1.0 / (p["g1"] - 2 * p["g2"]), mlh=1.0 / (p["g1"] + 2 * p["g2"]),
                 mhh_par=1.0 / (p["g1"] + p["g2"]), mlh_par=1.0 / (p["g1"] - p["g2"]),
                 eps_s=p["eps_s"], eps_inf=p["eps_inf"], hwLO=p["hwLO"], a=p["a"],
-                Ep=Ep, Dso=D, g=g, approx=approx)
+                Ep=Ep, Dso=D, g=g, approx=approx,
+                C11=p["C11"], C12=p["C12"], ac=p["ac"], av=p["av"], b=p["b"])
 
 
 def list_materials():
@@ -562,7 +589,7 @@ class Structure:
 # ---------------------------------------------------------------------------
 class Solver:
     def __init__(self, structure, T=300.0, field=0.0, dz=0.1, Bz=0.0, Bpar=0.0, z0=None,
-                 V_ext=None):
+                 V_ext=None, strain=False, nonparabolic=False):
         """
         field: electric field along z in kV/cm (positive tilts the bands up to
                the right for electrons).
@@ -575,6 +602,15 @@ class Solver:
                a function V_ext(z) -> eV with z in nm (z = 0 at the left edge).
                It shifts Ec and Ev together, e.g. piezoelectric / built-in
                fields that differ from layer to layer, gate potentials.
+        strain: True = layers are pseudomorphically strained to the structure's
+               substrate (biaxial strain, (001) growth): band edges shift and
+               heavy and light holes split. Layers thicker than the critical
+               thickness trigger a warning. Default False (unstrained, as before).
+        nonparabolic: True = energy-dependent electron mass (two-band Kane model)
+               m*(E, z) = m*(z) [1 + (E - Ec(z)) / Eg(z)], each electron level
+               found self-consistently. Important for high levels in narrow-gap
+               wells (InGaAs, InAs, InSb): QWIPs, cascade lasers. Holes stay
+               parabolic. Default False (parabolic, as before).
         """
         self.s = structure
         self.T = T
@@ -583,6 +619,8 @@ class Solver:
         self.Bz = Bz
         self.Bpar = Bpar
         self.V_ext = V_ext
+        self.strain = strain
+        self.nonparabolic = nonparabolic
         self.VH = None          # Hartree potential (Schroedinger-Poisson)
         self._build_grid()
         self.z0 = self.z[-1] / 2 if z0 is None else z0
@@ -605,11 +643,53 @@ class Solver:
         self.params = P
         get = lambda key: np.array([P[i][key] for i in idx])
         self.Ec0, self.Ev0 = get("Ec"), get("Ev")
+        self._dlh = np.zeros_like(self.Ev0)       # light-hole edge relative to heavy-hole edge
+        self.layer_strain = None
+        if self.strain:
+            self._apply_strain(P, idx)
         self.me, self.mhh, self.mlh = get("me"), get("mhh"), get("mlh")
+        self.Eg_local = self.Ec0 - self.Ev0       # local gap to the heavy-hole edge (includes strain)
         self.mhh_par, self.mlh_par = get("mhh_par"), get("mlh_par")
         self.g = get("g")
         self.eps = get("eps_s")
         self.Nd = np.array([self.s.layers[i].doping for i in idx]) * 1e-21   # nm^-3
+
+
+    def _apply_strain(self, P, idx):
+        """Shift band edges of pseudomorphically strained layers (see hetero1d.strain)."""
+        import warnings
+        from .strain import layer_strain
+        a_sub = material(self.s.substrate, T=self.T)["a"]
+        last = len(P) - 1                          # the last (top) layer is uncapped
+        info = [layer_strain(p, a_sub, capped=(i != last)) for i, p in enumerate(P)]
+        self.layer_strain = info
+        dEc = np.array([d["dEc"] for d in info])[idx]
+        dEhh = np.array([d["dEhh"] for d in info])[idx]
+        dElh = np.array([d["dElh"] for d in info])[idx]
+        self.Ec0 = self.Ec0 + dEc
+        self.Ev0 = self.Ev0 + dEhh                # Ev = heavy-hole band edge
+        self._dlh = dElh - dEhh                   # light-hole edge = Ev + _dlh
+        for layer, d in zip(self.s.layers, info):
+            if d.get("missing"):
+                warnings.warn(f"strain: no elastic parameters for {layer.material}; treated as unstrained",
+                              RuntimeWarning, stacklevel=3)
+            elif layer.thickness > d["hc"]:
+                warnings.warn(f"strain: {layer} is thicker than its critical thickness "
+                              f"{d['hc']:.1f} nm and would relax; the pseudomorphic model does not apply",
+                              RuntimeWarning, stacklevel=3)
+
+    def strain_report(self):
+        """Print the strain, band-edge shifts and critical thickness of every layer."""
+        if not self.strain:
+            print("Strain is off: create the Solver with strain=True.")
+            return
+        print(f"\nStrain (pseudomorphic on {self.s.substrate}, (001) growth)")
+        print("  #   layer                              eps_xx (%)  eps_zz (%)  dEc (meV)  dEhh (meV)  dElh (meV)  h_c (nm)")
+        for i, (layer, d) in enumerate(zip(self.s.layers, self.layer_strain)):
+            hc = "inf" if not np.isfinite(d["hc"]) else f"{d['hc']:.1f}"
+            flag = "  <- exceeds h_c" if layer.thickness > d["hc"] else ""
+            print(f"  {i:<3d} {str(layer):34s} {d['exx']*100:9.3f} {d['ezz']*100:11.3f} {d['dEc']*1000:10.1f}"
+                  f" {d['dEhh']*1000:11.1f} {d['dElh']*1000:11.1f} {hc:>9s}{flag}")
 
     @property
     def Ufield(self):
@@ -627,8 +707,14 @@ class Solver:
 
     @property
     def Ev(self):
+        """valence-band edge for heavy holes (equal to the light-hole edge without strain)"""
         v = self.Ev0 + self.Ufield
         return v + self.VH if self.VH is not None else v
+
+    @property
+    def Ev_lh(self):
+        """valence-band edge for light holes (differs from Ev under shear strain)"""
+        return self.Ev + self._dlh
 
     # ---------------- Schroedinger (BenDaniel-Duke FDM) ----------------
     def _solve(self, V, m, nstates):
@@ -651,18 +737,63 @@ class Solver:
                 full[:, i] *= -1
         return E, full
 
+
+    def _solve_nonparabolic(self, V, nstates, tol=1e-7, max_iter=60):
+        """
+        Electron levels with the energy-dependent mass m(E, z) = m*(z)[1 + (E - Ec(z))/Eg(z)].
+        Every level n is iterated to self-consistency: E -> m(E, z) -> n-th eigenvalue -> E.
+        Returns energies, wavefunctions and the converged mass profile of each level.
+        """
+        E0, psi0 = self._solve(V, self.me, nstates)            # parabolic start
+        Ec = V                                                  # local conduction-band edge incl. fields
+        Eg = np.maximum(self.Eg_local, 0.05)
+        E = np.array(E0, dtype=float)
+        psi = np.array(psi0)
+        masses = np.zeros((len(self.z), len(E)))
+        self.np_iterations = []
+        for n in range(len(E)):
+            En = E[n]
+            for it in range(max_iter):
+                m = self.me * (1 + (En - Ec) / Eg)
+                m = np.clip(m, 0.1 * self.me, None)             # deep under a barrier: keep the mass positive
+                En_new, psi_n = self._solve(V, m, n + 1)
+                En_new, psi_n = En_new[n], psi_n[:, n]
+                if abs(En_new - En) < tol:
+                    En = En_new
+                    break
+                En = En_new
+            E[n], psi[:, n], masses[:, n] = En, psi_n, m
+            self.np_iterations.append(it + 1)
+        order = np.argsort(E)
+        E, psi, masses = E[order], psi[:, order], masses[:, order]
+        # Levels of an energy-dependent Hamiltonian are not exactly orthogonal
+        # (overlaps ~1 %). Symmetric (Loewdin) orthogonalisation restores exact
+        # orthogonality with the smallest possible change of every wavefunction,
+        # so dipoles and selection rules stay well defined. Energies are unchanged.
+        S = psi.T @ psi * self.dz
+        w, U = np.linalg.eigh(S)
+        psi = psi @ (U @ np.diag(1 / np.sqrt(w)) @ U.T)
+        for i in range(psi.shape[1]):                          # keep the sign convention
+            if psi[np.argmax(np.abs(psi[:, i])), i] < 0:
+                psi[:, i] *= -1
+        return E, psi, masses
+
     def solve(self, n_e=6, n_h=6):
         """Electrons, heavy holes, light holes. Hole energies are absolute
         band energies (valence-band side), i.e. E_hole < Ev of the well."""
-        self.Ee, self.psi_e = self._solve(self.Ec + self.V_dia(self.me), self.me, n_e)
+        if self.nonparabolic:
+            self.Ee, self.psi_e, self.me_levels = self._solve_nonparabolic(self.Ec + self.V_dia(self.me), n_e)
+        else:
+            self.Ee, self.psi_e = self._solve(self.Ec + self.V_dia(self.me), self.me, n_e)
+            self.me_levels = np.repeat(self.me[:, None], len(self.Ee), axis=1)
         Eh, self.psi_hh = self._solve(-self.Ev + self.V_dia(self.mhh_par), self.mhh, n_h)
-        El, self.psi_lh = self._solve(-self.Ev + self.V_dia(self.mlh_par), self.mlh, n_h)
+        El, self.psi_lh = self._solve(-self.Ev_lh + self.V_dia(self.mlh_par), self.mlh, n_h)
         self.Ehh, self.Elh = -Eh, -El
         if self.field == 0:
             # bound = below the lower of the two outer barrier edges
             self.e_bound = self.Ee < min(self.Ec[0], self.Ec[-1])
             self.hh_bound = self.Ehh > max(self.Ev[0], self.Ev[-1])
-            self.lh_bound = self.Elh > max(self.Ev[0], self.Ev[-1])
+            self.lh_bound = self.Elh > max(self.Ev_lh[0], self.Ev_lh[-1])
         else:
             # with an electric field the band edges at the two ends differ, so
             # "bound" (quasi-bound) = mostly localised inside the inner layers
@@ -1187,7 +1318,9 @@ class Solver:
     def report(self, n2d_cm2=None):
         s = self
         print(f"\n{'='*78}\nRESULTS  ({self.s.name}, T = {self.T:g} K, F = {self.field:g} kV/cm, "
-              f"Bz = {self.Bz:g} T, Bpar = {self.Bpar:g} T)\n{'='*78}")
+              f"Bz = {self.Bz:g} T, Bpar = {self.Bpar:g} T"
+              + (", strain" if self.strain else "") + (", non-parabolic" if self.nonparabolic else "")
+              + f")\n{'='*78}")
         Ecmin = self.Ec.min()
 
         def table(title, E, psi, bound, ref, sign):
@@ -1204,7 +1337,9 @@ class Solver:
         table("Electron subbands (E-edge from lowest Ec)", self.Ee, self.psi_e, self.e_bound, Ecmin, 1)
         table("Heavy-hole subbands (E-edge from highest Ev, positive = down)",
               self.Ehh, self.psi_hh, self.hh_bound, self.Ev.max(), -1)
-        table("Light-hole subbands", self.Elh, self.psi_lh, self.lh_bound, self.Ev.max(), -1)
+        table("Light-hole subbands", self.Elh, self.psi_lh, self.lh_bound, self.Ev_lh.max(), -1)
+        if self.strain:
+            self.strain_report()
 
         isb = self.intersubband()
         if isb:
