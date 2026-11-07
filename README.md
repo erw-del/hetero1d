@@ -16,6 +16,7 @@ Method: effective-mass envelope-function approximation, BenDaniel-Duke
 with position-dependent mass.
 
 ---
+
 ## Any well shape in one line
 
 ![Built-in geometries](examples/geometries.png)
@@ -46,6 +47,21 @@ to better than 0.01 meV.
 
 Full examples: [`examples/geometries.py`](examples/geometries.py) ·
 [`examples/arbitrary_potentials.py`](examples/arbitrary_potentials.py)
+
+## Strain and non-parabolicity 
+```python
+sol = Solver(s, strain=True).solve()                         # strained layers (e.g. InGaAs on GaAs)
+sol.strain_report()                                          # strain, band shifts, critical thickness
+sol = Solver(s, nonparabolic=True).solve()                   # energy-dependent electron mass
+sol = Solver(s, strain=True, nonparabolic=True).solve()      # both together
+```
+- **Strain:** biaxial strain of pseudomorphic layers on the `substrate`, heavy/light-hole
+  splitting (`sol.Ev_lh`), Matthews–Blakeslee critical thickness with warnings.
+  Strained In0.2Ga0.8As/GaAs: band gap 1.195 eV, critical thickness 11.4 nm.
+- **Non-parabolicity:** two-band Kane model, every electron level self-consistent.
+  Matches the exact solution to 0.01 meV; shifts the e0→e1 transition of a 5 nm
+  InGaAs/InAlAs well from 3.6 to 4.6 µm.
+- Both are off by default, so existing scripts give identical results.
 
 ## What it can compute
 
@@ -260,8 +276,6 @@ E_ky = sol.inplane_dispersion(np.linspace(-0.2, 0.2, 41))
 ```python
 Solver(s, T=77)             # temperature (K), band gaps follow Varshni law
 Solver(s, dz=0.05)          # finer grid (nm), default 0.1
-Solver(s, T=77)             # temperature (K), band gaps follow Varshni law
-Solver(s, dz=0.05)          # finer grid (nm), default 0.1
 Solver(s, V_ext=lambda z: 0.01 * z)   # your own extra potential (eV, z in nm), e.g. piezoelectric fields
 ```
 ---
@@ -276,9 +290,22 @@ Solver(s, V_ext=lambda z: 0.01 * z)   # your own extra potential (eV, z in nm), 
 | In-plane diamagnetic shift, 1 T | 2nd-order perturbation theory | 0.0235 meV (identical) |
 
 ## Model limits
-Single-band effective mass (no k·p band mixing, no non-parabolicity), Γ valley only
-(X/L valleys not included), no strain, nitrides without polarisation fields,
-Zeeman and Landau levels for electrons only.
+- **Single-band effective mass** for each carrier: no k·p mixing of heavy holes, light holes
+  and the split-off band. Hole in-plane dispersion and optical gain are approximate;
+  exciton binding energies are a lower bound.
+- **Strain** (optional, `strain=True`): biaxial strain of pseudomorphic (001) layers.
+  The light hole's coupling to the split-off band is neglected, so the heavy/light-hole
+  splitting is slightly overestimated; effective masses are not changed by strain;
+  the critical thickness is a guideline (layers can exceed it metastably).
+- **Non-parabolicity** (optional, `nonparabolic=True`): two-band Kane model for electrons
+  only (holes stay parabolic). The in-plane mass used for the density of states and
+  oscillator strengths is the band-edge mass; `transmission()` stays parabolic.
+- **Γ valley only:** X and L valleys are not included (AlGaAs above x ≈ 0.45, AlAs, AlSb,
+  GaP, high-Al AlGaInP are indirect).
+- **Nitrides:** zinc-blende parameters without spontaneous/piezoelectric polarisation;
+  built-in fields can be added with `V_ext`.
+- **Magnetic fields:** Zeeman splitting and Landau levels for electrons only; tilted
+  fields use decoupled subbands.
 
 ## Parameters
 I. Vurgaftman, J. R. Meyer, L. R. Ram-Mohan, J. Appl. Phys. 89, 5815 (2001);
