@@ -17,6 +17,7 @@ form without spin-orbit coupling of the light hole):
     shear part        S  = b (eps_xx - eps_zz)
     dE_hh = dEv + S                     compressive strain (eps_xx < 0): heavy hole up
     dE_lh = dEv - S                     tensile strain (eps_xx > 0):     light hole up
+    (from 0.4: the light hole is coupled to the split-off band, see band_shifts)
 
 Critical thickness (Matthews-Blakeslee, 60-degree dislocations): above h_c a
 strained layer relaxes by forming misfit dislocations, and the pseudomorphic
@@ -36,16 +37,28 @@ def biaxial_strain(a, a_sub, C11, C12):
     return exx, ezz
 
 
-def band_shifts(p, exx, ezz):
+def band_shifts(p, exx, ezz, split_off=True):
     """
-    Band-edge shifts (eV) for a material parameter dict p with keys ac, av, b.
-    Returns (dEc, dEhh, dElh).
+    Band-edge shifts (eV) for a material parameter dict p with keys ac, av, b
+    (and Dso for the split-off coupling). Returns (dEc, dEhh, dElh).
+
+    The heavy hole is decoupled at k = 0: dEhh = dEv + S.
+    The light hole couples to the split-off band through the shear strain; the
+    2x2 problem at k = 0 gives (with Q = -S, Delta = spin-orbit splitting)
+        dElh = dEv + (Q - Delta + sqrt(Delta^2 + 2 Delta Q + 9 Q^2)) / 2
+    which tends to dEv - S for a large Delta (the uncoupled result).
     """
     tr = 2 * exx + ezz
     dEc = p["ac"] * tr
     dEv = -p["av"] * tr
     S = p["b"] * (exx - ezz)
-    return dEc, dEv + S, dEv - S
+    D = p.get("Dso", np.nan)
+    if split_off and D is not None and np.isfinite(D) and D > 0:
+        Q = -S
+        dElh = dEv + 0.5 * (Q - D + np.sqrt(D * D + 2 * D * Q + 9 * Q * Q))
+    else:
+        dElh = dEv - S
+    return dEc, dEv + S, dElh
 
 
 def critical_thickness(a, a_sub, C11, C12, capped=True):

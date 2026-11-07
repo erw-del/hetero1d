@@ -606,11 +606,12 @@ class Solver:
                substrate (biaxial strain, (001) growth): band edges shift and
                heavy and light holes split. Layers thicker than the critical
                thickness trigger a warning. Default False (unstrained, as before).
-        nonparabolic: True = energy-dependent electron mass (two-band Kane model)
-               m*(E, z) = m*(z) [1 + (E - Ec(z)) / Eg(z)], each electron level
-               found self-consistently. Important for high levels in narrow-gap
-               wells (InGaAs, InAs, InSb): QWIPs, cascade lasers. Holes stay
-               parabolic. Default False (parabolic, as before).
+        nonparabolic: energy-dependent electron mass, each level found self-consistently.
+               True or "kane3": three-band Kane model (with the split-off band),
+                   m(E) = m* [2/Eg + 1/(Eg+D)] / [2/(Eg+e) + 1/(Eg+D+e)],  e = E - Ec(z)
+               "kane2": two-band Kane model, m(E) = m* (1 + e/Eg).
+               Used for the levels, the Fermi level, oscillator strengths, LO rates
+               and transmission. Holes stay parabolic. Default False (parabolic).
         """
         self.s = structure
         self.T = T
@@ -620,7 +621,10 @@ class Solver:
         self.Bpar = Bpar
         self.V_ext = V_ext
         self.strain = strain
-        self.nonparabolic = nonparabolic
+        if nonparabolic not in (False, True, "kane2", "kane3"):
+            raise ValueError('nonparabolic must be False, True, "kane2" or "kane3"')
+        self.nonparabolic = bool(nonparabolic)
+        self.np_model = None if not nonparabolic else ("kane2" if nonparabolic == "kane2" else "kane3")
         self.VH = None          # Hartree potential (Schroedinger-Poisson)
         self._build_grid()
         self.z0 = self.z[-1] / 2 if z0 is None else z0
@@ -649,6 +653,7 @@ class Solver:
             self._apply_strain(P, idx)
         self.me, self.mhh, self.mlh = get("me"), get("mhh"), get("mlh")
         self.Eg_local = self.Ec0 - self.Ev0       # local gap to the heavy-hole edge (includes strain)
+        self.Dso_local = np.nan_to_num(get("Dso"), nan=1e6)   # custom materials: no split-off band
         self.mhh_par, self.mlh_par = get("mhh_par"), get("mlh_par")
         self.g = get("g")
         self.eps = get("eps_s")
@@ -738,6 +743,18 @@ class Solver:
         return E, full
 
 
+
+    def _np_ratio(self, eps, Eg=None, D=None):
+        """m(E)/m* for kinetic energy eps = E - Ec (array), Kane model of this solver."""
+        Eg = np.maximum(self.Eg_local if Eg is None else Eg, 0.05)
+        D = self.Dso_local if D is None else D
+        eps = np.maximum(eps, -0.9 * Eg)                        # deep under a barrier: keep it finite
+        if self.np_model == "kane2":
+            r = 1 + eps / Eg
+        else:
+            r = (2 / Eg + 1 / (Eg + D)) / (2 / (Eg + eps) + 1 / (Eg + D + eps))
+        return np.maximum(r, 0.1)
+
     def _solve_nonparabolic(self, V, nstates, tol=1e-7, max_iter=60):
         """
         Electron levels with the energy-dependent mass m(E, z) = m*(z)[1 + (E - Ec(z))/Eg(z)].
@@ -746,7 +763,6 @@ class Solver:
         """
         E0, psi0 = self._solve(V, self.me, nstates)            # parabolic start
         Ec = V                                                  # local conduction-band edge incl. fields
-        Eg = np.maximum(self.Eg_local, 0.05)
         E = np.array(E0, dtype=float)
         psi = np.array(psi0)
         masses = np.zeros((len(self.z), len(E)))
@@ -754,8 +770,7 @@ class Solver:
         for n in range(len(E)):
             En = E[n]
             for it in range(max_iter):
-                m = self.me * (1 + (En - Ec) / Eg)
-                m = np.clip(m, 0.1 * self.me, None)             # deep under a barrier: keep the mass positive
+                m = self.me * self._np_ratio(En - Ec)
                 En_new, psi_n = self._solve(V, m, n + 1)
                 En_new, psi_n = En_new[n], psi_n[:, n]
                 if abs(En_new - En) < tol:
@@ -824,6 +839,13 @@ class Solver:
     def mass_average(self, psi, m):
         return np.sum(psi**2 * m) * self.dz
 
+    def level_mass(self, i):
+        """in-plane effective mass of electron level i (energy-dependent if nonparabolic)"""
+        ml = getattr(self, "me_levels", None)
+        if ml is None or ml.shape != self.psi_e.shape:
+            return self.mass_average(self.psi_e[:, i], self.me)
+        return self.mass_average(self.psi_e[:, i], ml[:, i])
+
     def expect_z(self, psi):
         zm = np.sum(psi**2 * self.z) * self.dz
         dz2 = np.sum(psi**2 * (self.z - zm) ** 2) * self.dz
@@ -840,18 +862,18 @@ class Solver:
                     continue
                 dE = self.Ee[j] - self.Ee[i]
                 zij = np.sum(self.psi_e[:, i] * self.z * self.psi_e[:, j]) * self.dz
-                m = 0.5 * (self.mass_average(self.psi_e[:, i], self.me) +
-                           self.mass_average(self.psi_e[:, j], self.me))
+                m = 0.5 * (self.level_mass(i) + self.level_mass(j))
                 f = m * dE * zij**2 / HB2M0          # = 2 m* dE z^2 / hbar^2
                 res.append(dict(i=i, j=j, dE=dE, lam_um=1.23984 / dE, z=zij, f=f, m=m))
         return res
 
-    def fermi_level(self, n2d_cm2, states=None):
-        """Fermi level (eV) and populations (cm^-2) for sheet density n2d."""
+    def fermi_level(self, n2d_cm2, states=None, T=None):
+        """Fermi level (eV) and populations (cm^-2) for sheet density n2d
+        (temperature T, default the solver temperature)."""
         states = np.arange(len(self.Ee)) if states is None else states
         E = self.Ee[states]
-        m = np.array([self.mass_average(self.psi_e[:, i], self.me) for i in states])
-        kT = KB * self.T
+        m = np.array([self.level_mass(i) for i in states])
+        kT = KB * (self.T if T is None else T)
         n_target = n2d_cm2 * 1e-14                       # nm^-2
 
         def ntot(EF):
@@ -909,12 +931,24 @@ class Solver:
         return A
 
     # ---------------- LO phonon scattering ----------------
-    def lo_phonon_rates(self):
+    def lo_phonon_rates(self, thermal=False, Te=None, n2d_cm2=None, n_angles=64, n_energies=100):
         """
-        Intersubband LO-phonon EMISSION rates from the bottom of subband i to f
-        (Ferreira & Bastard, PRB 40, 1074 (1989)), bulk-like phonons of the
-        material where state i is mostly localised. Returns list of dicts.
+        Intersubband LO-phonon scattering rates (Froehlich coupling, bulk-like phonons
+        of the material where the initial state is mostly localised; Ferreira & Bastard,
+        PRB 40, 1074 (1989)).
+
+        thermal=False (default): EMISSION from the bottom of subband i to every lower
+            subband f (only if the spacing exceeds the phonon energy).
+        thermal=True: rates averaged over the in-plane kinetic energy of the electrons
+            in subband i (Fermi-Dirac at the electron temperature Te, default the lattice
+            temperature; with n2d_cm2 the quasi-Fermi level is used, otherwise Boltzmann),
+            emission AND absorption, between all pairs of bound levels (up and down).
+            Includes transitions below the phonon energy that hot electrons can make.
+            Final-state blocking is neglected.
+        Returns list of dicts: i, f, dE, rate (1/s), tau_ps; thermal adds rate_em, rate_abs.
         """
+        if thermal:
+            return self._lo_thermal(Te, n2d_cm2, n_angles, n_energies)
         res = []
         kT = KB * self.T
         stride = max(1, len(self.z) // 1500)
@@ -929,7 +963,7 @@ class Solver:
             hw = p["hwLO"]
             inv_ep = 1 / p["eps_inf"] - 1 / p["eps_s"]
             nLO = 1 / np.expm1(hw / kT)
-            m = self.mass_average(self.psi_e[:, i], self.me)
+            m = self.level_mass(i)
             for f in range(i):
                 dE = self.Ee[i] - self.Ee[f]
                 if dE <= hw:
@@ -944,15 +978,167 @@ class Solver:
                 res.append(dict(i=i, f=f, dE=dE, rate=rate, tau_ps=1e12 / rate))
         return res
 
+
+    def _lo_thermal(self, Te, n2d_cm2, n_angles, n_energies):
+        kT = KB * self.T
+        Te = self.T if Te is None else Te
+        kTe = KB * Te
+        stride = max(1, len(self.z) // 1200)
+        dzs = self.dz * stride
+        bound = [i for i in range(len(self.Ee)) if self.e_bound[i]]
+        EF = self.fermi_level(n2d_cm2, states=np.array(bound), T=Te)[0] if n2d_cm2 else None
+        theta = np.linspace(0, 2 * np.pi, n_angles, endpoint=False)
+        lag = np.abs(np.arange(-(len(self.z[::stride]) - 1), len(self.z[::stride]))) * dzs * 1e-9   # m
+        res = []
+        for i in bound:
+            lay = int(np.argmax(self.layer_probabilities(self.psi_e[:, i])))
+            p = self.params[lay]
+            hw = p["hwLO"]
+            inv_ep = 1 / p["eps_inf"] - 1 / p["eps_s"]
+            nLO = 1 / np.expm1(hw / kT)
+            m = self.level_mass(i)
+            pref = m * M0_SI * Q_SI**2 * (hw * Q_SI / HBAR_SI) * inv_ep / (4 * HBAR_SI**2 * EPS0_SI)
+            Emax = (max(EF - self.Ee[i], 0) if EF is not None else 0) + 12 * kTe
+            base = np.linspace(0, Emax, n_energies)
+            for f in bound:
+                if f == i:
+                    continue
+                dE = self.Ee[i] - self.Ee[f]
+                # put the emission/absorption thresholds (final kinetic energy = 0) exactly into
+                # the grid: the rate jumps there, and a fixed grid would integrate the jump poorly
+                th = [t for t in (hw - dE, -hw - dE) if 0 < t < Emax]
+                Ek = np.unique(np.concatenate([base] + [[t * (1 - 1e-9), t * (1 + 1e-9)] for t in th]))
+                if EF is None:
+                    occ = np.exp(-Ek / kTe)
+                else:
+                    occ = 1 / (1 + np.exp(np.clip((self.Ee[i] + Ek - EF) / kTe, -60, 60)))
+                ki = np.sqrt(2 * m * M0_SI * Ek * Q_SI) / HBAR_SI                 # 1/m
+                rho = self.psi_e[::stride, i] * self.psi_e[::stride, f]
+                G = np.correlate(rho, rho, mode="full") * dzs**2                    # A(q) = sum G exp(-q|lag|)
+                wt = occ * np.gradient(Ek)                                          # trapezoid weights
+                wt[0] *= 0.5; wt[-1] *= 0.5
+                rates = []
+                for sign, occ_ph in ((-1, nLO + 1), (+1, nLO)):                    # emission, absorption
+                    Ekf = Ek + dE + sign * hw
+                    ok = np.where(Ekf > 0)[0]
+                    W = np.zeros_like(Ek)
+                    for chunk in np.array_split(ok, max(1, len(ok) // 16)):        # limit memory
+                        if len(chunk) == 0:
+                            continue
+                        kf = np.sqrt(2 * m * M0_SI * Ekf[chunk] * Q_SI) / HBAR_SI
+                        q = np.sqrt(ki[chunk, None] ** 2 + kf[:, None] ** 2
+                                    - 2 * ki[chunk, None] * kf[:, None] * np.cos(theta)[None, :])
+                        q = np.maximum(q, 1e3)
+                        A = np.exp(-q[..., None] * lag[None, None, :]) @ G
+                        W[chunk] = pref * occ_ph * np.mean(A / q, axis=1)
+                    rates.append(np.sum(W * wt) / np.sum(wt))
+                rate = rates[0] + rates[1]
+                res.append(dict(i=i, f=f, dE=dE, rate=rate, rate_em=rates[0], rate_abs=rates[1],
+                                tau_ps=1e12 / rate if rate > 0 else np.inf))
+        return res
+
+    # ---------------- optical gain ----------------
+    def hole_fermi_level(self, p2d_cm2, T=None):
+        """Quasi-Fermi level of holes (eV, electron-energy scale) and hole populations
+        of the heavy- and light-hole levels (cm^-2) for a hole sheet density p2d."""
+        kT = KB * (self.T if T is None else T)
+        Eh = np.concatenate([self.Ehh, self.Elh])
+        psi = np.concatenate([self.psi_hh, self.psi_lh], axis=1)
+        mpar = np.zeros(len(Eh))
+        for k in range(len(Eh)):
+            mprof = self.mhh_par if k < len(self.Ehh) else self.mlh_par
+            mpar[k] = self.mass_average(psi[:, k], mprof)
+        target = p2d_cm2 * 1e-14
+        def ptot(Ef):                                  # holes: occupation 1 - f of the valence states
+            return np.sum(mpar * DOS0 * kT * np.logaddexp(0, (Eh - Ef) / kT))
+        lo, hi = Eh.max() - 1.0, Eh.max() + 1.0
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (lo, mid) if ptot(mid) < target else (mid, hi)
+        Ef = 0.5 * (lo + hi)
+        pops = mpar * DOS0 * kT * np.logaddexp(0, (Eh - Ef) / kT) * 1e14
+        return Ef, pops[:len(self.Ehh)], pops[len(self.Ehh):]
+
+    def gain(self, energies, n2d_cm2, p2d_cm2=None, gamma=0.006, polarization="TE",
+             units="cm-1", Lw=None, T=None):
+        """
+        Interband optical gain (positive) / absorption (negative) spectrum from quasi-Fermi
+        levels of electrons (n2d_cm2) and holes (p2d_cm2, default = n2d_cm2), free-carrier
+        model with parabolic in-plane subbands and Lorentzian broadening gamma (eV, HWHM).
+            g(hw) = pi e^2 / (n_r c eps0 m0^2 w) sum |<e|h>|^2 |M|^2 rho_r (f_c - f_v)
+        |M|^2 = m0 Ep / 6 x (3/2 hh, 1/2 lh) for TE, (0 hh, 2 lh) for TM.
+        units: "cm-1" (material gain; divided by the well thickness Lw in nm, default =
+        total thickness of the layers whose conduction edge lies below the outer layers)
+        or "per_pass" (dimensionless fraction per pass through the structure).
+        Many-body effects (band-gap renormalisation, Coulomb enhancement) are not included.
+        """
+        energies = np.asarray(energies, dtype=float)
+        T = self.T if T is None else T
+        kT = KB * T
+        p2d_cm2 = n2d_cm2 if p2d_cm2 is None else p2d_cm2
+        EFc = self.fermi_level(n2d_cm2, T=T)[0] if n2d_cm2 > 0 else -1e3
+        EFv = self.hole_fermi_level(p2d_cm2, T=T)[0] if p2d_cm2 > 0 else 1e3
+        Ep_prof = np.array([pp["Ep"] for pp in self.params])[self.layer_index]
+        nr = np.sqrt(np.mean([pp["eps_inf"] for pp in self.params]))
+        w_TE = {"hh": 1.5, "lh": 0.5}; w_TM = {"hh": 0.0, "lh": 2.0}
+        wpol = w_TE if polarization.upper() == "TE" else w_TM
+        # fine internal grid for the unbroadened spectrum, then Lorentzian convolution
+        Eg_grid = np.linspace(energies.min() - 15 * gamma, energies.max() + 15 * gamma, 3000)
+        g0 = np.zeros_like(Eg_grid)
+        for band, Eh, psih, bnd, mprof in (("hh", self.Ehh, self.psi_hh, self.hh_bound, self.mhh_par),
+                                          ("lh", self.Elh, self.psi_lh, self.lh_bound, self.mlh_par)):
+            if wpol[band] == 0:
+                continue
+            for i in range(len(self.Ee)):
+                if not self.e_bound[i]:
+                    continue
+                me_i = self.level_mass(i)
+                for j in range(len(Eh)):
+                    if not bnd[j]:
+                        continue
+                    ov2 = (np.sum(self.psi_e[:, i] * psih[:, j]) * self.dz) ** 2
+                    if ov2 < 1e-6:
+                        continue
+                    mh = self.mass_average(psih[:, j], mprof)
+                    mr = me_i * mh / (me_i + mh)
+                    Ep = np.nansum(self.psi_e[:, i] ** 2 * np.nan_to_num(Ep_prof, nan=20.0)) * self.dz
+                    M2 = M0_SI * Ep * Q_SI / 6 * wpol[band]                      # kg J
+                    E0 = self.Ee[i] - Eh[j]
+                    x = np.maximum(Eg_grid - E0, 0)
+                    fc = 1 / (1 + np.exp(np.clip((self.Ee[i] + mr / me_i * x - EFc) / kT, -60, 60)))
+                    fv = 1 / (1 + np.exp(np.clip((Eh[j] - mr / mh * x - EFv) / kT, -60, 60)))
+                    rho = mr * M0_SI / (np.pi * HBAR_SI**2)                       # 1/(J m^2), incl. spin
+                    g0 += np.where(Eg_grid >= E0, ov2 * M2 * rho * (fc - fv), 0.0)
+        w = Eg_grid * Q_SI / HBAR_SI
+        g0 = np.pi * Q_SI**2 / (nr * C_SI * EPS0_SI * M0_SI**2 * w) * g0          # per pass
+        dEg = Eg_grid[1] - Eg_grid[0]
+        L = gamma / np.pi / ((energies[:, None] - Eg_grid[None, :]) ** 2 + gamma**2)
+        G = L @ g0 * dEg
+        if units == "per_pass":
+            return G
+        if Lw is None:
+            edge = min(self.Ec0[0], self.Ec0[-1]) - 1e-3
+            Lw = sum(l.thickness for l, pp in zip(self.s.layers, self.params) if pp["Ec"] < edge) or self.z[-1]
+        return G / (Lw * 1e-7)                                                     # cm^-1
+
     # ---------------- scattering: transfer matrix ----------------
-    def transmission(self, energies, V=None, m=None):
+    def transmission(self, energies, V=None, m=None, nonparabolic=None):
         """
         Electron transmission T(E) through the whole structure (transfer matrix
         on the FDM grid, BenDaniel-Duke matching, leads = first/last layers).
+        nonparabolic: use the energy-dependent mass (default: as the solver).
         """
         V = self.Ec if V is None else V
+        use_np = (self.nonparabolic if nonparabolic is None else nonparabolic) and m is None
         m = self.me if m is None else m
         E = np.asarray(energies, dtype=complex) + 1e-9j
+        if use_np:
+            if self.np_model is None:
+                self.np_model = "kane3"
+            Er = np.real(E)[None, :]
+            m = self.me[:, None] * self._np_ratio(Er - V[:, None], self.Eg_local[:, None], self.Dso_local[:, None])
+        else:
+            m = np.repeat(np.asarray(m, dtype=float)[:, None], len(E), axis=1)
         M11 = np.ones_like(E); M12 = np.zeros_like(E)
         M21 = np.zeros_like(E); M22 = np.ones_like(E)
         for Vj, mj in zip(V, m):
@@ -1055,10 +1241,12 @@ class Solver:
         kT = KB * self.T
         for it in range(max_iter):
             self.Ee, self.psi_e = self._solve(self.Ec, self.me, n_e)
+            self.me_levels = np.repeat(self.me[:, None], len(self.Ee), axis=1)
             EF, pops = self.fermi_level(n2d)
             while self.Ee[-1] < EF + 10 * kT and n_e < 200:   # enough empty states?
                 n_e += 4
                 self.Ee, self.psi_e = self._solve(self.Ec, self.me, n_e)
+                self.me_levels = np.repeat(self.me[:, None], len(self.Ee), axis=1)
                 EF, pops = self.fermi_level(n2d)
             n3d = np.sum(pops * 1e-14 * self.psi_e**2, axis=1)       # nm^-3
             rhs = POISSON * (n3d - self.Nd)
@@ -1319,7 +1507,7 @@ class Solver:
         s = self
         print(f"\n{'='*78}\nRESULTS  ({self.s.name}, T = {self.T:g} K, F = {self.field:g} kV/cm, "
               f"Bz = {self.Bz:g} T, Bpar = {self.Bpar:g} T"
-              + (", strain" if self.strain else "") + (", non-parabolic" if self.nonparabolic else "")
+              + (", strain" if self.strain else "") + (f", non-parabolic ({self.np_model})" if self.nonparabolic else "")
               + f")\n{'='*78}")
         Ecmin = self.Ec.min()
 
