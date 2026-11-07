@@ -1,5 +1,5 @@
 # hetero1d
-[![PyPI](https://img.shields.io/pypi/v/hetero1d?cacheSeconds=3600)](https://pypi.org/project/hetero1d/)
+[![PyPI](https://img.shields.io/pypi/v/hetero1d?cacheSeconds=3600&v=040)](https://pypi.org/project/hetero1d/)
 
 **Try it in your browser, no installation:**
 - [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/erw-del/hetero1d/blob/main/hetero1d_applications.ipynb) **Real applications**: lasers, QWIP, modulator, RTD, superlattice, HEMT, Landau levels, tilted-field double well
@@ -48,20 +48,29 @@ to better than 0.01 meV.
 Full examples: [`examples/geometries.py`](examples/geometries.py) ·
 [`examples/arbitrary_potentials.py`](examples/arbitrary_potentials.py)
 
-## Strain and non-parabolicity 
+## Strain, non-parabolicity, scattering and gain (new in 0.2–0.4)
 ```python
-sol = Solver(s, strain=True).solve()                         # strained layers (e.g. InGaAs on GaAs)
-sol.strain_report()                                          # strain, band shifts, critical thickness
-sol = Solver(s, nonparabolic=True).solve()                   # energy-dependent electron mass
-sol = Solver(s, strain=True, nonparabolic=True).solve()      # both together
+sol = Solver(s, strain=True).solve()            # strained layers (e.g. InGaAs on GaAs)
+sol.strain_report()                             # strain, band shifts, critical thickness
+sol = Solver(s, nonparabolic=True).solve()      # energy-dependent electron mass
+sol = Solver(s, strain=True, nonparabolic=True).solve()
+
+sol.lo_phonon_rates(thermal=True, Te=100)       # LO-phonon rates of hot electrons
+sol.gain(E, n2d_cm2=3e12)                       # optical gain spectrum (cm^-1), TE or TM
 ```
 - **Strain:** biaxial strain of pseudomorphic layers on the `substrate`, heavy/light-hole
-  splitting (`sol.Ev_lh`), Matthews–Blakeslee critical thickness with warnings.
-  Strained In0.2Ga0.8As/GaAs: band gap 1.195 eV, critical thickness 11.4 nm.
-- **Non-parabolicity:** two-band Kane model, every electron level self-consistent.
-  Matches the exact solution to 0.01 meV; shifts the e0→e1 transition of a 5 nm
-  InGaAs/InAlAs well from 3.6 to 4.6 µm.
-- Both are off by default, so existing scripts give identical results.
+  splitting with split-off coupling (`sol.Ev_lh`), Matthews–Blakeslee critical thickness
+  with warnings. Strained In0.2Ga0.8As/GaAs: band gap 1.195 eV, heavy/light-hole
+  splitting 90 meV, critical thickness 11.4 nm.
+- **Non-parabolicity:** three-band Kane model (`"kane2"` for two-band), every level
+  self-consistent; used for the levels, Fermi level, oscillator strengths, LO rates and
+  transmission. Matches exact solutions to 0.01 meV.
+- **Thermal LO-phonon rates:** emission and absorption averaged over the electron
+  distribution, including transitions below the phonon energy; agrees with an
+  independent implementation to 0.1 %.
+- **Optical gain:** interband gain from electron and hole quasi-Fermi levels, TE and TM.
+  8 nm GaAs well: transparency at 1.1×10¹² cm⁻², 3570 cm⁻¹ at 3×10¹² cm⁻².
+- All options are off by default, so existing scripts give identical results.
 
 ## What it can compute
 
@@ -81,6 +90,10 @@ sol = Solver(s, strain=True, nonparabolic=True).solve()      # both together
 | **Magnetic field ∥ z** | Landau levels, spin Zeeman splitting, Landau fan, Landau-level DOS, filling factor, Fermi level vs B (Shubnikov-de Haas-like oscillations) |
 | **Magnetic field ∥ plane** | Diamagnetic shift, in-plane dispersion E_n(k_y) |
 | **Materials** | 12 binaries, 17 ternaries, 4 quaternaries, temperature-dependent band gaps, lattice matching, user-defined materials |
+| **Strain** | Strain tensor, band shifts, heavy/light-hole splitting, critical thickness |
+| **Non-parabolicity** | Energy-dependent mass for levels, Fermi level, oscillator strengths, transmission |
+| **Scattering** | LO-phonon rates from the subband bottom or thermally averaged (hot electrons) |
+| **Gain** | Interband optical gain and absorption spectra, TE and TM |
 
 **Materials included**
 - Binaries: GaAs, AlAs, InAs, InP, GaSb, AlSb, GaP, AlP, InSb, GaN, AlN, InN (nitrides: zinc-blende, approximate)
@@ -291,21 +304,22 @@ Solver(s, V_ext=lambda z: 0.01 * z)   # your own extra potential (eV, z in nm), 
 
 ## Model limits
 - **Single-band effective mass** for each carrier: no k·p mixing of heavy holes, light holes
-  and the split-off band. Hole in-plane dispersion and optical gain are approximate;
+  and the split-off band away from k = 0. Hole in-plane dispersion is parabolic;
   exciton binding energies are a lower bound.
-- **Strain** (optional, `strain=True`): biaxial strain of pseudomorphic (001) layers.
-  The light hole's coupling to the split-off band is neglected, so the heavy/light-hole
-  splitting is slightly overestimated; effective masses are not changed by strain;
-  the critical thickness is a guideline (layers can exceed it metastably).
-- **Non-parabolicity** (optional, `nonparabolic=True`): two-band Kane model for electrons
-  only (holes stay parabolic). The in-plane mass used for the density of states and
-  oscillator strengths is the band-edge mass; `transmission()` stays parabolic.
+- **Strain** (optional, `strain=True`): biaxial strain of pseudomorphic (001) layers; the
+  light hole is coupled to the split-off band at k = 0. Effective masses are not changed by
+  strain; the critical thickness is a guideline (layers can exceed it metastably).
+- **Non-parabolicity** (optional, `nonparabolic=True`): three-band Kane model for electrons;
+  holes stay parabolic.
+- **Gain:** free-carrier model with parabolic hole subbands; many-body effects (band-gap
+  renormalisation, Coulomb enhancement) are not included.
+- **LO-phonon rates:** bulk phonons; final-state blocking is neglected in thermal rates.
 - **Γ valley only:** X and L valleys are not included (AlGaAs above x ≈ 0.45, AlAs, AlSb,
   GaP, high-Al AlGaInP are indirect).
 - **Nitrides:** zinc-blende parameters without spontaneous/piezoelectric polarisation;
   built-in fields can be added with `V_ext`.
-- **Magnetic fields:** Zeeman splitting and Landau levels for electrons only; tilted
-  fields use decoupled subbands.
+- **Magnetic fields:** Zeeman splitting and Landau levels for electrons only; tilted fields
+  use decoupled subbands.
 
 ## Parameters
 I. Vurgaftman, J. R. Meyer, L. R. Ram-Mohan, J. Appl. Phys. 89, 5815 (2001);
