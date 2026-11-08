@@ -177,3 +177,13 @@ def test_gain_unchanged_by_strain_flag_when_lattice_matched():
     g0 = Solver(s, T=300).solve(6, 10).gain(E, 3e12).max()
     g1 = Solver(s, T=300, strain=True).solve(6, 10).gain(E, 3e12).max()
     assert abs(g1 - g0) / g0 < 0.02
+
+
+
+def test_stark_sweep_single_bound_level():
+    """regression (0.4.2): a well with only one bound electron level must not crash the Stark sweep"""
+    import warnings
+    warnings.simplefilter("ignore")
+    s = Structure.single_well(well=("InGaAs", 0.2), barrier="GaAs", Lw=10, Lb=25)
+    r = Solver(s, T=300, strain=True).stark_sweep(np.linspace(-20, 20, 5))
+    assert np.all(np.isfinite(r["E_e0hh0"])) and np.all(np.isnan(r["E01"]))
