@@ -1,4 +1,5 @@
 # hetero1d
+[![tests](https://github.com/erw-del/hetero1d/actions/workflows/tests.yml/badge.svg)](https://github.com/erw-del/hetero1d/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/hetero1d?cacheSeconds=3600&v=040)](https://pypi.org/project/hetero1d/)
 
 **Try it in your browser, no installation:**
