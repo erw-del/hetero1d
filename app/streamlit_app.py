@@ -392,7 +392,11 @@ elif page == "Magnetic field":
                 "low temperature, e.g. 4.2 K.")
     fig_fan, _ = g.fan_figure(Bv, levarr, EFB, sol=sol)
     show(fig_fan)
-    show(g.line_figure(Bv, [nu], [""], "Magnetic field B (T)", "filling factor ν", "Filling factor"))
+    show(g.filling_figure(Bv, nu, nB))
+    st.caption("ν depends only on the density and the field (ν = n h / eB). Red lines: even integer fillings, where a "
+               "spin-degenerate set of Landau levels is completely full — the Fermi level jumps there (fan above) and "
+               "measured resistance shows Shubnikov–de Haas minima and quantum Hall plateaus. Grey dotted: odd fillings "
+               "(spin-split levels, visible at high field and low temperature).")
     m1, m2 = st.columns(2)
     m1.metric(f"Fermi level at {B:g} T", f"{EFb:.5f} eV")
     m2.metric("Cyclotron energy", f"{lev[0]['cyclotron energy (meV)']:.3f} meV" if lev else "-")

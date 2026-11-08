@@ -832,6 +832,33 @@ def fan_figure(B, lev, EF=None, sol=None, E_span=0.05, levels_info=None):
     return fig, note
 
 
+def filling_figure(B, nu, n2d):
+    """Filling factor nu = n h / (e B) with the integer fillings marked (completely filled Landau levels)."""
+    fig, ax = _fig(9, 4.6, ncols=2, gridspec_kw=dict(width_ratios=[1.35, 1]))
+    a, b = ax
+    a.plot(B, nu, color="#1f5fa8", lw=2)
+    for k in range(1, min(int(np.nanmax(nu)), 12) + 1):                      # mark nu = 1 ... 12
+        Bk = n2d / (2.417989e10 * k)
+        if B[0] <= Bk <= B[-1]:
+            even = k % 2 == 0
+            a.axvline(Bk, color="#d1495b" if even else "#c8c8c8", lw=0.9 if even else 0.6, ls="-" if even else (0, (2, 3)),
+                      alpha=0.8 if even else 1.0)
+            a.annotate(f"ν={k}", (Bk, k), textcoords="offset points", xytext=(4, 4), fontsize=7,
+                       color="#d1495b" if even else "#777777")
+            a.plot(Bk, k, "o", ms=4, color="#d1495b" if even else "#aaaaaa")
+    a.set_xlabel("Magnetic field B (T)"); a.set_ylabel("filling factor ν"); a.set_title("Filling factor ν = n h / (e B)")
+    a.set_ylim(0, min(np.nanmax(nu) * 1.05, 30))
+    inv = 1 / B
+    b.plot(inv, nu, color="#1f5fa8", lw=2)
+    for k in range(1, min(int(np.nanmax(nu)), 12) + 1):
+        if B[0] <= n2d / (2.417989e10 * k) <= B[-1]:
+            b.axhline(k, color="#d1495b" if k % 2 == 0 else "#d0d0d0", lw=0.7, ls="-" if k % 2 == 0 else (0, (2, 3)))
+    b.set_xlabel("1 / B (1/T)"); b.set_ylabel("filling factor ν"); b.set_title("ν versus 1/B (straight line)")
+    b.set_ylim(0, min(np.nanmax(nu) * 1.05, 30))
+    fig.tight_layout()
+    return fig
+
+
 def minibands_figure(E, q, d, rows, base):
     """Superlattice dispersion q(E) with the minibands shaded."""
     fig, ax = _fig(9, 4.8)
