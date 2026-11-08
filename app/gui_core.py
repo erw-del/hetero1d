@@ -353,12 +353,38 @@ def minibands_table(sol, E_span_meV=500, dz=0.02):
 
 # ---------------------------------------------------------------- fields
 def stark_data(p, fields, n_e=8, n_h=8):
+    """
+    Stark sweep: for each field, the lowest electron, heavy-hole and light-hole states localised in the
+    wells (active states). Quantities that do not exist at a field (for example e1 in a well with a single
+    bound level, or a carrier that has tunnelled out) are returned as NaN instead of stopping the sweep.
+    """
+    keys = ["F", "E_e0hh0", "ov_e0hh0", "E_e0lh0", "ov_e0lh0", "E01", "z01", "zmean_e0", "zmean_hh0"]
+    out = {k: [] for k in keys}
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        _, sol, _ = solve(dict(p, field=0.0))
-        r = sol.stark_sweep(np.asarray(fields, dtype=float), n_e=n_e, n_h=n_h)
-    keys = ["F", "E_e0hh0", "ov_e0hh0", "E_e0lh0", "ov_e0lh0", "E01", "z01", "zmean_e0", "zmean_hh0"]
-    return {k: np.asarray(r[k], dtype=float) for k in keys}
+        for F in np.asarray(fields, dtype=float):
+            _, sv, _ = solve(dict(p, field=float(F), n_e=max(int(p.get("n_e", 6)), n_e) + 4,
+                                  n_h=max(int(p.get("n_h", 6)), n_h) + 4))
+            ie, ih, il = sv.active_states(sv.psi_e), sv.active_states(sv.psi_hh), sv.active_states(sv.psi_lh)
+            ov = lambda a, b: float((np.sum(a * b) * sv.dz) ** 2)
+            out["F"].append(F)
+            e0 = ie[0] if len(ie) else None
+            out["E_e0hh0"].append(sv.Ee[e0] - sv.Ehh[ih[0]] if e0 is not None and len(ih) else np.nan)
+            out["ov_e0hh0"].append(ov(sv.psi_e[:, e0], sv.psi_hh[:, ih[0]]) if e0 is not None and len(ih) else np.nan)
+            out["E_e0lh0"].append(sv.Ee[e0] - sv.Elh[il[0]] if e0 is not None and len(il) else np.nan)
+            out["ov_e0lh0"].append(ov(sv.psi_e[:, e0], sv.psi_lh[:, il[0]]) if e0 is not None and len(il) else np.nan)
+            if len(ie) > 1:
+                out["E01"].append(sv.Ee[ie[1]] - sv.Ee[e0])
+                out["z01"].append(float(np.sum(sv.psi_e[:, e0] * sv.z * sv.psi_e[:, ie[1]]) * sv.dz))
+            else:
+                out["E01"].append(np.nan); out["z01"].append(np.nan)
+            out["zmean_e0"].append(sv.expect_z(sv.psi_e[:, e0])[0] if e0 is not None else np.nan)
+            out["zmean_hh0"].append(sv.expect_z(sv.psi_hh[:, ih[0]])[0] if len(ih) else np.nan)
+    res = {k: np.asarray(v, dtype=float) for k, v in out.items()}
+    if np.all(np.isnan(res["E_e0hh0"])) and np.all(np.isnan(res["E_e0lh0"])):
+        raise ValueError("no electron-hole pair stays inside the wells at any field (for example holes are not confined "
+                         "by a V_ext potential, which shifts both bands together). Use a real well or deeper barriers.")
+    return res
 
 
 def landau_data(sol, B, B_values, n2d, N_max=8, gamma=0.001):
@@ -408,67 +434,351 @@ def lattice_matched_value(name, substrate, fixed=None):
     return float(lattice_matched(name, substrate, fixed=fixed))
 
 
-# ---------------------------------------------------------------- figures
-def band_figure(sol, n_show=4, scale=0.05, holes=True):
-    fig, ax = plt.subplots(figsize=(8, 4.6))
-    ax.plot(sol.z, sol.Ec, "k", lw=1.2, label="Ec")
-    ax.plot(sol.z, sol.Ev, "k", lw=1.2, label="Ev (heavy hole)")
-    if np.max(np.abs(sol.Ev_lh - sol.Ev)) > 1e-4:
-        ax.plot(sol.z, sol.Ev_lh, "k:", lw=1, label="Ev (light hole)")
-    for n in range(min(n_show, len(sol.Ee))):
-        if sol.e_bound[n]:
-            ax.plot(sol.z, sol.Ee[n] + scale * sol.psi_e[:, n] / np.abs(sol.psi_e[:, n]).max(), label=f"e{n}")
+# ---------------------------------------------------------------- figures (professional style)
+STYLE = {
+    "font.family": "DejaVu Sans", "font.size": 10, "axes.titlesize": 11, "axes.titleweight": "bold",
+    "axes.labelsize": 10, "axes.linewidth": 0.9, "axes.edgecolor": "#333333", "axes.labelcolor": "#222222",
+    "xtick.direction": "in", "ytick.direction": "in", "xtick.top": True, "ytick.right": True,
+    "xtick.minor.visible": True, "ytick.minor.visible": True, "xtick.major.size": 5, "ytick.major.size": 5,
+    "xtick.minor.size": 2.5, "ytick.minor.size": 2.5, "axes.grid": True, "grid.alpha": 0.18, "grid.linestyle": "-",
+    "legend.frameon": True, "legend.framealpha": 0.92, "legend.edgecolor": "#cccccc", "legend.fontsize": 8,
+    "figure.dpi": 140, "savefig.dpi": 200, "lines.linewidth": 1.6, "image.cmap": "turbo",
+}
+PALETTE = ["#1f5fa8", "#d1495b", "#2a9d8f", "#e9a23b", "#6a4c93", "#3d405b", "#8ab17d", "#c06c84", "#118ab2", "#ef476f"]
+CMAP = "turbo"
+
+
+def _fig(w=8.5, h=4.6, ncols=1, nrows=1, **kw):
+    plt.rcParams.update(STYLE)
+    plt.rcParams["axes.prop_cycle"] = matplotlib.cycler(color=PALETTE)
+    return plt.subplots(nrows, ncols, figsize=(w, h), **kw)
+
+
+def _layer_colours(s):
+    """One colour per layer from its material and composition (graded sections shade smoothly)."""
+    import matplotlib.colors as mc
+    cmap = plt.get_cmap("cividis")
+    names = sorted({l.material for l in s.layers})
+    out = []
+    for l in s.layers:
+        base = names.index(l.material) / max(1, len(names) - 1)
+        x = l.x if l.x is not None else 0.0
+        out.append(cmap(0.15 + 0.7 * (0.5 * base + 0.5 * x)))
+    return out
+
+
+def layer_strip(ax, s, sol, height=0.06):
+    """Coloured strip above the axes showing the layer stack (material names on wide layers).
+    Any axes title is moved above the strip."""
+    if ax.get_title():
+        ax.set_title(ax.get_title(), pad=22)
+    from matplotlib.patches import Rectangle
+    edges = np.concatenate([[0], np.cumsum([l.thickness for l in s.layers])])
+    cols = _layer_colours(s)
+    trans = ax.get_xaxis_transform()
+    span = edges[-1]
+    last = None
+    for i, l in enumerate(s.layers):
+        ax.add_patch(Rectangle((edges[i], 1.01), l.thickness, height, transform=trans, color=cols[i], clip_on=False, lw=0))
+        label = l.material + (f" {l.x:.2g}" if l.x is not None and l.label is None else "")
+        if l.label is not None:
+            label = l.label
+        if l.thickness > 0.07 * span and label != last:
+            ax.text(edges[i] + l.thickness / 2, 1.01 + height / 2, label, transform=trans, ha="center", va="center",
+                    fontsize=7, color="white", clip_on=False)
+        last = label
+
+
+def band_figure(sol, s=None, n_show=4, holes=True, fill=True):
+    """Band diagram with filled |psi|^2 lobes at their energies and the layer stack on top."""
+    fig, ax = _fig(9, 5.2)
+    z = sol.z
+    Ec, Ev, Evl = sol.Ec, sol.Ev, sol.Ev_lh
+    top, bot = Ec.max(), Ev.min()
+    ax.fill_between(z, Ec, top + 0.08 * (top - bot), color="#1f5fa8", alpha=0.07, lw=0)
+    ax.fill_between(z, Ev, bot - 0.08 * (top - bot), color="#d1495b", alpha=0.07, lw=0)
+    ax.plot(z, Ec, color="#1f5fa8", lw=2, label="E$_c$")
+    ax.plot(z, Ev, color="#d1495b", lw=2, label="E$_v$ (heavy hole)")
+    if np.max(np.abs(Evl - Ev)) > 1e-4:
+        ax.plot(z, Evl, color="#e9a23b", lw=1.4, ls="--", label="E$_v$ (light hole)")
+    amp = 0.07 * (top - bot)                                   # lobe height relative to the plotted range
+    ecol = plt.get_cmap("Blues")
+    hcol = plt.get_cmap("Reds")
+    nb = [n for n in range(min(n_show, len(sol.Ee))) if sol.e_bound[n]]
+    for k, n in enumerate(nb):
+        d = sol.psi_e[:, n] ** 2; d = d / d.max()
+        c = ecol(0.85 - 0.5 * k / max(1, len(nb)))
+        ax.fill_between(z, sol.Ee[n], sol.Ee[n] + amp * d, color=c, alpha=0.55 if fill else 0, lw=0)
+        ax.plot(z, sol.Ee[n] + amp * d, color=c, lw=1)
+        ax.hlines(sol.Ee[n], z[0], z[-1], color=c, lw=0.5, ls=":")
+    for E_, lab in _group_labels([sol.Ee[n] for n in nb], [f"e{n}" for n in nb], 0.02 * (top - bot)):
+        ax.text(z[-1], E_, f" {lab}", va="center", fontsize=8, color="#1f5fa8")
     if holes:
-        for n in range(min(max(1, n_show // 2), len(sol.Ehh))):
-            if sol.hh_bound[n]:
-                ax.plot(sol.z, sol.Ehh[n] - scale * sol.psi_hh[:, n] / np.abs(sol.psi_hh[:, n]).max(), "--", label=f"hh{n}")
+        for k, n in enumerate([n for n in range(min(max(2, n_show // 2), len(sol.Ehh))) if sol.hh_bound[n]]):
+            d = sol.psi_hh[:, n] ** 2; d = d / d.max()
+            c = hcol(0.85 - 0.3 * k)
+            ax.fill_between(z, sol.Ehh[n], sol.Ehh[n] - amp * d, color=c, alpha=0.5, lw=0)
+            ax.plot(z, sol.Ehh[n] - amp * d, color=c, lw=1)
+        hb = [n for n in range(min(max(2, n_show // 2), len(sol.Ehh))) if sol.hh_bound[n]]
+        for E_, lab in _group_labels([sol.Ehh[n] for n in hb], [f"hh{n}" for n in hb], 0.02 * (top - bot)):
+            ax.text(z[-1], E_, f" {lab}", va="center", fontsize=8, color="#d1495b")
         if len(sol.Elh) and sol.lh_bound[0]:
-            ax.plot(sol.z, sol.Elh[0] - scale * sol.psi_lh[:, 0] / np.abs(sol.psi_lh[:, 0]).max(), ":", label="lh0")
-    ax.set_xlabel("z (nm)"); ax.set_ylabel("Energy (eV)"); ax.legend(fontsize=7, ncol=2, loc="center right")
+            d = sol.psi_lh[:, 0] ** 2; d = d / d.max()
+            ax.plot(sol.z, sol.Elh[0] - amp * d, color="#e9a23b", lw=1)
+    ax.set_xlim(z[0], z[-1])
+    ax.set_xlabel("Position z (nm)"); ax.set_ylabel("Energy (eV)")
+    ax.legend(loc="center left", fontsize=8)
+    if s is not None:
+        layer_strip(ax, s, sol)
     fig.tight_layout()
     return fig
 
 
-def conduction_figure(sol, n_show=6):
+def _group_labels(energies, names, tol):
+    """Merge labels of (nearly) degenerate levels: 'e0-e2' instead of three overlapping labels."""
+    groups = []
+    for E, nm in zip(energies, names):
+        if groups and abs(E - groups[-1][0][-1]) < tol:
+            groups[-1][0].append(E); groups[-1][1].append(nm)
+        else:
+            groups.append(([E], [nm]))
+    return [(np.mean(es), ns[0] if len(ns) == 1 else f"{ns[0]}–{ns[-1]}") for es, ns in groups]
+
+
+def conduction_figure(sol, s=None, n_show=6):
+    """Conduction-band zoom: |psi|^2 lobes filled with a colour scale, energies in meV."""
+    fig, ax = _fig(9, 4.6)
     E0 = sol.Ec.min()
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(sol.z, (sol.Ec - E0) * 1000, "k")
+    Ecm = (sol.Ec - E0) * 1000
+    top = (min(sol.Ec[0], sol.Ec[-1]) - E0) * 1000
+    ax.fill_between(sol.z, Ecm, max(Ecm.max(), top) * 1.15 + 1, color="#1f5fa8", alpha=0.08, lw=0)
+    ax.plot(sol.z, Ecm, color="#1f5fa8", lw=2)
     bound = [n for n in range(min(n_show, len(sol.Ee))) if sol.e_bound[n]]
+    cmap = plt.get_cmap(CMAP)
     if bound:
         Es = [(sol.Ee[n] - E0) * 1000 for n in bound]
         gaps = np.diff(Es)
-        sc = 0.4 * (gaps.min() if len(gaps) and gaps.min() > 0.5 else 30)
-        for n, En in zip(bound, Es):
-            ax.plot(sol.z, En + sc * sol.psi_e[:, n] / np.abs(sol.psi_e[:, n]).max(), label=f"e{n}: {En:.2f} meV")
-            ax.axhline(En, color="gray", lw=0.3, ls=":")
-    top = (min(sol.Ec[0], sol.Ec[-1]) - E0) * 1000
-    ax.set_ylim(-0.05 * max(top, 1), 1.15 * top if top > 0 else 100)
-    ax.set_xlabel("z (nm)"); ax.set_ylabel("Energy above the minimum (meV)"); ax.legend(fontsize=7)
+        big = gaps[gaps > 0.10 * max(top, 1)] if len(gaps) else np.array([])
+        amp = 0.45 * big.min() if len(big) else 0.25 * max(top, 20)          # ignore near-degenerate splittings
+        amp = min(amp, 0.25 * max(top, 20))
+        for k, (n, En) in enumerate(zip(bound, Es)):
+            d = sol.psi_e[:, n] ** 2; d = d / d.max()
+            c = cmap(0.1 + 0.8 * k / max(1, len(bound) - 1))
+            ax.fill_between(sol.z, En, En + amp * d, color=c, alpha=0.45, lw=0)
+            ax.plot(sol.z, En + amp * d, color=c, lw=1)
+            ax.hlines(En, sol.z[0], sol.z[-1], color=c, lw=0.6, ls=":")
+        for En, lab in _group_labels(Es, [f"e{n}" for n in bound], 0.02 * max(top, 1)):
+            ax.text(sol.z[-1], En, f"  {lab}  {En:.2f} meV", va="center", fontsize=8, color="#222222")
+    ax.set_xlim(sol.z[0], sol.z[-1])
+    ax.set_ylim(-0.04 * max(top, 1), (top if top > 0 else 100) * 1.12)
+    ax.set_xlabel("Position z (nm)"); ax.set_ylabel("Energy above the band minimum (meV)")
+    if s is not None:
+        layer_strip(ax, s, sol)
     fig.tight_layout()
     return fig
 
 
-def xy_figure(x, ys, labels, xlabel, ylabel, title="", logy=False, hlines=None):
-    fig, ax = plt.subplots(figsize=(8, 4))
-    for y, lab in zip(ys, labels):
-        ax.plot(x, y, label=lab)
+def ldos_map(sol, carrier="electrons", gamma_meV=3.0, nE=500):
+    """Local density of states map  sum_n |psi_n(z)|^2 L(E - E_n)  (energies in eV)."""
+    if carrier == "electrons":
+        E_lv, psi, lo, hi = sol.Ee, sol.psi_e, sol.Ec.min() - 0.02, max(sol.Ec.max(), sol.Ee[-1]) + 0.02
+    else:
+        E_lv, psi = np.concatenate([sol.Ehh, sol.Elh]), np.concatenate([sol.psi_hh, sol.psi_lh], axis=1)
+        lo, hi = min(sol.Ev.min(), E_lv.min()) - 0.02, sol.Ev.max() + 0.02
+    E = np.linspace(lo, hi, nE)
+    g = gamma_meV / 1000
+    L = g / np.pi / ((E[:, None] - E_lv[None, :]) ** 2 + g ** 2)            # (nE, n)
+    M = L @ (psi ** 2).T                                                        # (nE, nz)
+    return E, M
+
+
+def ldos_figure(sol, s=None, carrier="electrons", gamma_meV=3.0):
+    E, M = ldos_map(sol, carrier, gamma_meV)
+    fig, ax = _fig(9, 5.0)
+    im = ax.pcolormesh(sol.z, E, np.log10(M + M.max() * 1e-4), cmap="magma", shading="auto", rasterized=True)
+    edge = sol.Ec if carrier == "electrons" else sol.Ev
+    ax.plot(sol.z, edge, color="white", lw=1.4)
+    if carrier != "electrons" and np.max(np.abs(sol.Ev_lh - sol.Ev)) > 1e-4:
+        ax.plot(sol.z, sol.Ev_lh, color="white", lw=1, ls="--")
+    cb = fig.colorbar(im, ax=ax, pad=0.01); cb.set_label("log$_{10}$ LDOS (arb.)")
+    ax.set_xlabel("Position z (nm)"); ax.set_ylabel("Energy (eV)")
+    ax.set_title(f"Local density of states: {carrier}")
+    ax.grid(False)
+    if s is not None:
+        layer_strip(ax, s, sol)
+    fig.tight_layout()
+    return fig
+
+
+def density_waterfall(sol, n_show=8):
+    """|psi|^2 of the electron states stacked (waterfall), colour-coded."""
+    fig, ax = _fig(9, 4.8)
+    cmap = plt.get_cmap(CMAP)
+    n = min(n_show, len(sol.Ee))
+    for k in range(n):
+        d = sol.psi_e[:, k] ** 2
+        off = k * 1.1 * (sol.psi_e ** 2).max()
+        c = cmap(0.1 + 0.8 * k / max(1, n - 1))
+        ax.fill_between(sol.z, off, off + d, color=c, alpha=0.65, lw=0)
+        ax.plot(sol.z, off + d, color=c, lw=1)
+        ax.text(sol.z[-1], off, f" e{k}{'' if sol.e_bound[k] else ' (unbound)'}", fontsize=8, va="bottom", color=c)
+    ax.set_xlabel("Position z (nm)"); ax.set_ylabel("|ψ|² (offset)"); ax.set_yticks([])
+    ax.set_title("Electron probability densities")
+    fig.tight_layout()
+    return fig
+
+
+def line_figure(x, ys, labels, xlabel, ylabel, title="", logy=False, fill=False, hlines=None, vlines=None, markers=None,
+                logx=False):
+    fig, ax = _fig(9, 4.6)
+    for i, (y, lab) in enumerate(zip(ys, labels)):
+        c = PALETTE[i % len(PALETTE)]
+        ax.plot(x, y, color=c, label=lab or None)
+        if fill:
+            ax.fill_between(x, y, 0 if not logy else np.nanmin(y[np.isfinite(y)]), color=c, alpha=0.15, lw=0)
     if logy:
         ax.set_yscale("log")
+    if logx:
+        ax.set_xscale("log")
     for h in hlines or []:
-        ax.axhline(h, color="k", lw=0.5)
+        ax.axhline(h, color="#333333", lw=0.7)
+    for v in vlines or []:
+        ax.axvline(v, color="#888888", lw=0.7, ls="--")
+    for (mx, my, txt) in markers or []:
+        ax.plot(mx, my, "o", color="#d1495b", ms=5)
+        ax.annotate(txt, (mx, my), textcoords="offset points", xytext=(5, 6), fontsize=8)
     ax.set_xlabel(xlabel); ax.set_ylabel(ylabel); ax.set_title(title)
     if any(labels):
-        ax.legend(fontsize=7)
+        ax.legend()
+    fig.tight_layout()
+    return fig
+
+
+def map_figure(x, y, M, xlabel, ylabel, clabel, title="", lines=None, cmap=CMAP, log=False, symmetric=False):
+    fig, ax = _fig(9, 5.0)
+    Z = np.log10(np.maximum(M, np.nanmax(M) * 1e-5)) if log else M
+    if symmetric:
+        vmax = np.nanmax(np.abs(Z)); im = ax.pcolormesh(x, y, Z, cmap="RdBu_r", vmin=-vmax, vmax=vmax, shading="auto", rasterized=True)
+    else:
+        im = ax.pcolormesh(x, y, Z, cmap=cmap, shading="auto", rasterized=True)
+    for (lx, ly, lab, col) in lines or []:
+        ax.plot(lx, ly, color=col, lw=1.5, label=lab)
+    cb = fig.colorbar(im, ax=ax, pad=0.01); cb.set_label(clabel)
+    ax.set_xlabel(xlabel); ax.set_ylabel(ylabel); ax.set_title(title); ax.grid(False)
+    if lines:
+        ax.legend(loc="upper left")
+    fig.tight_layout()
+    return fig
+
+
+def gain_map(sol, densities, polarization="TE", gamma=0.006):
+    tr = sol.interband() or sol.interband(bound_only=False)
+    E0 = tr[0]["E"]
+    E = np.linspace(E0 - 0.05, E0 + 0.22, 500)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        G = np.array([sol.gain(E, n, gamma=gamma, polarization=polarization) for n in densities])
+    return E, np.asarray(densities), G
+
+
+def stark_map(stk, gamma=0.006, nE=500):
+    """Absorption map (field, energy) from the e0-hh0 and e0-lh0 transitions of a Stark sweep."""
+    F = stk["F"]
+    Emin = np.nanmin(np.concatenate([stk["E_e0hh0"], stk["E_e0lh0"]])) - 0.04
+    Emax = np.nanmax(np.concatenate([stk["E_e0hh0"], stk["E_e0lh0"]])) + 0.04
+    E = np.linspace(Emin, Emax, nE)
+    L = lambda E0: gamma / np.pi / ((E[:, None] - np.nan_to_num(E0, nan=1e3)[None, :]) ** 2 + gamma ** 2)
+    A = (0.75 * np.nan_to_num(stk["ov_e0hh0"])[None, :] * L(stk["E_e0hh0"])
+         + 0.25 * np.nan_to_num(stk["ov_e0lh0"])[None, :] * L(stk["E_e0lh0"]))
+    return E, F, A
+
+
+def landau_map(sol, Bv, n2d=None, gamma=0.001, nE=500):
+    """Landau-level DOS map (energy x field); with n2d also the Fermi level at each field."""
+    E = np.linspace(sol.Ee[0] - 0.004, sol.Ee[0] + 0.05, nE)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        D = np.array([sol.landau_dos(E, B=b, gamma=gamma) for b in Bv]).T            # (nE, nB)
+        EF = np.array([sol.fermi_level_B(n2d, B=b, gamma=gamma) for b in Bv]) if n2d else None
+    return E, np.asarray(Bv), D, EF
+
+
+def lo_te_sweep(sol, Te_values, n2d=None):
+    """Thermal lifetime of every downward transition versus electron temperature."""
+    out = {}
+    for Te in Te_values:
+        for r in lo_table(sol, thermal=True, Te=Te, n2d=n2d):
+            if int(r["from"][1:]) > int(r["to"][1:]):
+                out.setdefault(f"{r['from']}->{r['to']}", []).append(r["lifetime (ps)"])
+    return np.asarray(Te_values), out
+
+
+def lo_matrix_figure(rows, n):
+    """Heat map of lifetimes (ps) from state i (row) to state f (column)."""
+    M = np.full((n, n), np.nan)
+    for r in rows:
+        i, f = int(r["from"][1:]), int(r["to"][1:])
+        if i < n and f < n and np.isfinite(r["lifetime (ps)"]):
+            M[i, f] = r["lifetime (ps)"]
+    fig, ax = _fig(6.2, 5.0)
+    im = ax.imshow(np.log10(M), cmap="viridis_r", origin="lower")
+    for i in range(n):
+        for f in range(n):
+            if np.isfinite(M[i, f]):
+                ax.text(f, i, f"{M[i, f]:.3g}", ha="center", va="center", fontsize=8,
+                        color="white" if np.log10(M[i, f]) > np.nanmean(np.log10(M)) else "black")
+    ax.set_xticks(range(n)); ax.set_yticks(range(n))
+    ax.set_xticklabels([f"e{k}" for k in range(n)]); ax.set_yticklabels([f"e{k}" for k in range(n)])
+    ax.minorticks_off(); ax.grid(False)
+    ax.set_xlabel("final state"); ax.set_ylabel("initial state"); ax.set_title("LO-phonon lifetimes (ps)")
+    cb = fig.colorbar(im, ax=ax); cb.set_label("log$_{10}$ lifetime (ps)")
+    fig.tight_layout()
+    return fig
+
+
+def strain_figure(s, sol):
+    fig, ax = _fig(9, 4.4)
+    names = [f"{i}: {l.material}" for i, l in enumerate(s.layers)]
+    idx = np.arange(len(names))
+    d = sol.layer_strain
+    w = 0.27
+    ax.bar(idx - w, [x["dEc"] * 1000 for x in d], w, label="ΔE$_c$", color="#1f5fa8")
+    ax.bar(idx, [x["dEhh"] * 1000 for x in d], w, label="ΔE$_{hh}$", color="#d1495b")
+    ax.bar(idx + w, [x["dElh"] * 1000 for x in d], w, label="ΔE$_{lh}$", color="#e9a23b")
+    ax.axhline(0, color="#333333", lw=0.7)
+    if len(names) <= 25:
+        ax.set_xticks(idx); ax.set_xticklabels(names, rotation=45, ha="right", fontsize=7)
+    ax.set_ylabel("Band-edge shift (meV)"); ax.set_title("Strain-induced band shifts per layer"); ax.legend()
+    ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
     fig.tight_layout()
     return fig
 
 
 def fan_figure(B, lev, EF):
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(B, lev, color="gray", lw=0.6)
-    ax.plot(B, EF, "r", lw=1.5, label="Fermi level")
+    fig, ax = _fig(9, 4.8)
+    ax.plot(B, lev, color="#7a7a7a", lw=0.6)
+    ax.plot(B, EF, color="#d1495b", lw=2, label="Fermi level")
     lo, hi = np.nanmin(lev), np.nanmax(EF)
     ax.set_ylim(lo - 0.002, hi + 0.5 * (hi - lo) + 0.002)
-    ax.set_xlabel("B (T)"); ax.set_ylabel("Energy (eV)"); ax.set_title("Landau fan"); ax.legend(fontsize=7)
+    ax.set_xlabel("Magnetic field B (T)"); ax.set_ylabel("Energy (eV)"); ax.set_title("Landau fan"); ax.legend()
     fig.tight_layout()
     return fig
+
+
+def minibands_figure(E, q, d, rows, base):
+    """Superlattice dispersion q(E) with the minibands shaded."""
+    fig, ax = _fig(9, 4.8)
+    for k, r in enumerate(rows):
+        ax.axhspan(r["bottom (meV)"], r["top (meV)"], color=PALETTE[k % len(PALETTE)], alpha=0.15, lw=0)
+        ax.text(1.01, (r["bottom (meV)"] + r["top (meV)"]) / 2, f" {r['width (meV)']:.1f} meV", transform=ax.get_yaxis_transform(),
+                va="center", fontsize=8, color=PALETTE[k % len(PALETTE)])
+    ax.plot(q * d / np.pi, (E - base) * 1000, color="#1f5fa8", lw=1.8)
+    ax.set_xlim(0, 1)
+    ax.set_xlabel("Bloch wavevector q d / π"); ax.set_ylabel("Energy above the band minimum (meV)")
+    ax.set_title(f"Superlattice minibands (period {d:.2f} nm); shaded: allowed bands")
+    fig.tight_layout()
+    return fig
+
+
+# backwards-compatible name
+xy_figure = line_figure
