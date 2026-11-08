@@ -1117,8 +1117,15 @@ class Solver:
         if units == "per_pass":
             return G
         if Lw is None:
+            # wells = layers whose (possibly strained) conduction-band edge on the grid lies below the
+            # outer layers; compare grid values with grid values so strain shifts cancel consistently
             edge = min(self.Ec0[0], self.Ec0[-1]) - 1e-3
-            Lw = sum(l.thickness for l, pp in zip(self.s.layers, self.params) if pp["Ec"] < edge) or self.z[-1]
+            Lw = 0.0
+            for i, layer in enumerate(self.s.layers):
+                sel = self.layer_index == i
+                if np.any(sel) and self.Ec0[sel].min() < edge:
+                    Lw += layer.thickness
+            Lw = Lw or self.z[-1]
         return G / (Lw * 1e-7)                                                     # cm^-1
 
     # ---------------- scattering: transfer matrix ----------------
