@@ -382,9 +382,14 @@ elif page == "Magnetic field":
     with st.spinner("Landau levels..."):
         Bv = np.linspace(b1, b2, 160)
         lev, levarr, EFB, nu, Eg, dos, EFb, spin = g.landau_data(sol, B, Bv, nB, gamma=gam)
-        Em, Bm, D, _ = g.landau_map(sol, Bv[::2], gamma=gam)                 # Fermi level taken from the fan
-    show(g.map_figure(Bm, Em, D, "Magnetic field B (T)", "Energy (eV)", "log₁₀ density of states",
-                      "Landau-level density of states", lines=[(Bv, EFB, "Fermi level", "white")], log=True, cmap="inferno"))
+        Bm = np.linspace(b1, b2, 600)                                   # fine field grid: no aliasing
+        Em, Bm, D, _ = g.landau_map(sol, Bm, gamma=gam)
+        EFm = np.interp(Bm, Bv, EFB)                                    # Fermi level from the fan
+    fig, note = g.landau_map_figure(Em, Bm, D, EFm)
+    show(fig)
+    if note:
+        st.info(note + f" (temperature {p['T']:g} K, density {nB:.1e} cm⁻²). Landau quantisation is best seen at "
+                "low temperature, e.g. 4.2 K.")
     show(g.fan_figure(Bv, levarr, EFB))
     show(g.line_figure(Bv, [nu], [""], "Magnetic field B (T)", "filling factor ν", "Filling factor"))
     m1, m2 = st.columns(2)
@@ -398,7 +403,7 @@ elif page == "Magnetic field":
                g.to_csv(header=["B_T", "EF_eV", "filling_factor"] + [f"level_{i}_eV" for i in range(levarr.shape[1])],
                         columns=[Bv, EFB, nu] + [levarr[:, i] for i in range(levarr.shape[1])]), "landau_fan.csv")
     csv_button("Landau DOS map (energy rows × field columns)",
-               g.to_csv(header=["E_eV"] + [f"B={b:.3f}" for b in Bm[::2]], columns=[Em] + [D[:, i] for i in range(0, D.shape[1], 2)]),
+               g.to_csv(header=["E_eV"] + [f"B={b:.3f}" for b in Bm[::4]], columns=[Em] + [D[:, i] for i in range(0, D.shape[1], 4)]),
                "landau_dos_map.csv")
     st.subheader("In-plane field: dispersion E(ky)")
     if p["Bpar"] > 0:

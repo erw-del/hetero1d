@@ -693,14 +693,53 @@ def stark_map(stk, gamma=0.006, nE=500):
     return E, F, A
 
 
-def landau_map(sol, Bv, n2d=None, gamma=0.001, nE=500):
-    """Landau-level DOS map (energy x field); with n2d also the Fermi level at each field."""
-    E = np.linspace(sol.Ee[0] - 0.004, sol.Ee[0] + 0.05, nE)
+def landau_map(sol, Bv, n2d=None, gamma=0.001, nE=500, E_span=0.05, N_max=None):
+    """
+    Landau-level density of states D(E, B) = sum_levels (eB/h) L(E - E_level(B)), in states/(cm^2 eV),
+    computed directly from the level energies so the field can be sampled finely (no aliasing of the
+    rapidly crossing high levels). With n2d also the Fermi level at each field.
+    """
+    Bv = np.asarray(Bv, float)
+    if N_max is None:                                       # enough levels to fill the energy window at the lowest field
+        hwc_min = 1.1577e-4 * Bv.min() / max(sol.level_mass(0), 0.01)        # hbar e B / m*, eV
+        N_max = int(min(400, E_span / hwc_min + 5))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        D = np.array([sol.landau_dos(E, B=b, gamma=gamma) for b in Bv]).T            # (nE, nB)
-        EF = np.array([sol.fermi_level_B(n2d, B=b, gamma=gamma) for b in Bv]) if n2d else None
-    return E, np.asarray(Bv), D, EF
+        lev, EF, nu = sol.landau_fan(Bv, n2d_cm2=n2d if n2d else None, N_max=N_max, gamma=gamma)
+    lev = np.asarray(lev, float)                                           # (nB, n_levels), spin-resolved
+    E = np.linspace(sol.Ee[0] - 0.004, sol.Ee[0] + E_span, nE)
+    deg = 2.417989e10 * Bv                                                 # eB/h per spin, cm^-2 (per tesla: 2.418e10)
+    D = np.zeros((nE, len(Bv)))
+    for j in range(len(Bv)):
+        e = lev[j][np.isfinite(lev[j])]
+        e = e[(e > E[0] - 10 * gamma) & (e < E[-1] + 10 * gamma)]
+        if len(e):
+            D[:, j] = deg[j] * np.sum(gamma / np.pi / ((E[:, None] - e[None, :]) ** 2 + gamma ** 2), axis=1)
+    return E, Bv, D, (np.asarray(EF, float) if n2d else None)
+
+
+def landau_map_figure(E, B, D, EF=None, title="Landau-level density of states"):
+    """DOS map with the energy axis fixed to the map range; the Fermi level as a high-contrast line."""
+    import matplotlib.patheffects as pe
+    fig, ax = _fig(9, 5.0)
+    Z = np.log10(np.maximum(D, D.max() * 1e-4))
+    im = ax.pcolormesh(B, E, Z, cmap="inferno", shading="auto", rasterized=True)
+    cb = fig.colorbar(im, ax=ax, pad=0.01); cb.set_label("log$_{10}$ DOS (states cm$^{-2}$ eV$^{-1}$)")
+    note = ""
+    if EF is not None:
+        inside = (EF >= E[0]) & (EF <= E[-1])
+        if inside.any():
+            ax.plot(B, np.where(inside, EF, np.nan), color="#00e5ff", lw=2.2, ls="--", label="Fermi level",
+                    path_effects=[pe.Stroke(linewidth=4, foreground="black"), pe.Normal()])
+            ax.legend(loc="upper left", facecolor="#222222", labelcolor="white", edgecolor="#555555")
+        if not inside.all():
+            below = np.nanmax(EF[~inside]) < E[0]
+            note = ("Fermi level below the lowest Landau level (non-degenerate electrons: lower the temperature "
+                    "or raise the density)" if below else "Fermi level above the plotted energy range")
+    ax.set_ylim(E[0], E[-1]); ax.set_xlim(B[0], B[-1])
+    ax.set_xlabel("Magnetic field B (T)"); ax.set_ylabel("Energy (eV)"); ax.set_title(title); ax.grid(False)
+    fig.tight_layout()
+    return fig, note
 
 
 def lo_te_sweep(sol, Te_values, n2d=None):
