@@ -25,7 +25,7 @@ from .core import (
 )
 from . import potentials
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 __all__ = ["Structure", "Layer", "Solver", "material", "add_material",
            "list_materials", "lattice_matched", "BINARIES", "TERNARIES",
            "QUATERNARIES", "SHAPES", "potentials", "__version__"]

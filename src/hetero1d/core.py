@@ -1441,17 +1441,25 @@ class Solver:
             ie = sv.active_states(sv.psi_e)
             ihh = sv.active_states(sv.psi_hh)
             ilh = sv.active_states(sv.psi_lh)
-            e0, e1, ih, il = ie[0], ie[1], ihh[0], ilh[0]
+            # quantities that do not exist at this field (e.g. e1 in a well with one bound level,
+            # or a carrier that tunnelled out) are NaN instead of stopping the sweep
+            e0 = ie[0] if len(ie) else None
+            e1 = ie[1] if len(ie) > 1 else None
+            ih = ihh[0] if len(ihh) else None
+            il = ilh[0] if len(ilh) else None
+            nan = float("nan")
+            ov = lambda a, b: (np.sum(a * b) * sv.dz) ** 2
             res["Ee"].append(sv.Ee[ie[:n_e]]); res["Ehh"].append(sv.Ehh[ihh[:n_h]])
             res["Elh"].append(sv.Elh[ilh[:n_h]])
-            res["E_e0hh0"].append(sv.Ee[e0] - sv.Ehh[ih])
-            res["ov_e0hh0"].append((np.sum(sv.psi_e[:, e0] * sv.psi_hh[:, ih]) * sv.dz) ** 2)
-            res["E_e0lh0"].append(sv.Ee[e0] - sv.Elh[il])
-            res["ov_e0lh0"].append((np.sum(sv.psi_e[:, e0] * sv.psi_lh[:, il]) * sv.dz) ** 2)
-            res["E01"].append(sv.Ee[e1] - sv.Ee[e0])
-            res["z01"].append(np.sum(sv.psi_e[:, e0] * sv.z * sv.psi_e[:, e1]) * sv.dz)
-            res["zmean_e0"].append(sv.expect_z(sv.psi_e[:, e0])[0])
-            res["zmean_hh0"].append(sv.expect_z(sv.psi_hh[:, ih])[0])
+            ok_h, ok_l = e0 is not None and ih is not None, e0 is not None and il is not None
+            res["E_e0hh0"].append(sv.Ee[e0] - sv.Ehh[ih] if ok_h else nan)
+            res["ov_e0hh0"].append(ov(sv.psi_e[:, e0], sv.psi_hh[:, ih]) if ok_h else nan)
+            res["E_e0lh0"].append(sv.Ee[e0] - sv.Elh[il] if ok_l else nan)
+            res["ov_e0lh0"].append(ov(sv.psi_e[:, e0], sv.psi_lh[:, il]) if ok_l else nan)
+            res["E01"].append(sv.Ee[e1] - sv.Ee[e0] if e1 is not None else nan)
+            res["z01"].append(np.sum(sv.psi_e[:, e0] * sv.z * sv.psi_e[:, e1]) * sv.dz if e1 is not None else nan)
+            res["zmean_e0"].append(sv.expect_z(sv.psi_e[:, e0])[0] if e0 is not None else nan)
+            res["zmean_hh0"].append(sv.expect_z(sv.psi_hh[:, ih])[0] if ih is not None else nan)
         for k in res:
             if k not in ("Ee", "Ehh", "Elh"):
                 res[k] = np.array(res[k])
@@ -1464,7 +1472,7 @@ class Solver:
         r = self.stark_sweep(fields, n_e, n_h)
         F = r["F"]
         fig, ax = plt.subplots(1, 3, figsize=(14, 4))
-        ax[0].plot(F, (r["E_e0hh0"] - r["E_e0hh0"][np.argmin(np.abs(F))]) * 1000, "-o", ms=3, label="e0-hh0")
+        ax[0].plot(F, (r["E_e0hh0"] - r["E_e0hh0"][np.argmin(np.abs(F))]) * 1000, "-o", ms=3, label="e0-hh0")  # NaN gaps allowed
         ax[0].plot(F, (r["E_e0lh0"] - r["E_e0lh0"][np.argmin(np.abs(F))]) * 1000, "-s", ms=3, label="e0-lh0")
         ax[0].set_xlabel("Field (kV/cm)"); ax[0].set_ylabel("Stark shift (meV)")
         ax[0].set_title("Quantum-confined Stark effect"); ax[0].legend()
