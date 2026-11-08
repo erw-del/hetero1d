@@ -1,0 +1,5 @@
+hetero1d @ git+https://github.com/erw-del/hetero1d.git
+streamlit>=1.30
+numpy
+scipy
+matplotlib
