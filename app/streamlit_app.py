@@ -390,7 +390,8 @@ elif page == "Magnetic field":
     if note:
         st.info(note + f" (temperature {p['T']:g} K, density {nB:.1e} cm⁻²). Landau quantisation is best seen at "
                 "low temperature, e.g. 4.2 K.")
-    show(g.fan_figure(Bv, levarr, EFB))
+    fig_fan, _ = g.fan_figure(Bv, levarr, EFB, sol=sol)
+    show(fig_fan)
     show(g.line_figure(Bv, [nu], [""], "Magnetic field B (T)", "filling factor ν", "Filling factor"))
     m1, m2 = st.columns(2)
     m1.metric(f"Fermi level at {B:g} T", f"{EFb:.5f} eV")

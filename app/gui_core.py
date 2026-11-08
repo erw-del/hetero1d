@@ -392,7 +392,10 @@ def landau_data(sol, B, B_values, n2d, N_max=8, gamma=0.001):
         warnings.simplefilter("ignore")
         levels = [{"subband": L["n"], "Landau index N": L["N"], "spin": L["s"], "energy (eV)": round(float(L["E"]), 7),
                    "cyclotron energy (meV)": round(float(L["hwc"]) * 1000, 5)} for L in sol.landau_levels(B=B, N_max=N_max)]
-        lev, EF, nu = sol.landau_fan(np.asarray(B_values, float), n2d_cm2=n2d, N_max=N_max, gamma=gamma)
+        Bv = np.asarray(B_values, float)
+        hwc_min = 1.1577e-4 * Bv.min() / max(sol.level_mass(0), 0.01)          # cyclotron energy at the lowest field
+        N_fan = int(min(400, max(N_max, 0.05 / hwc_min + 5)))                   # fill a 50 meV window
+        lev, EF, nu = sol.landau_fan(Bv, n2d_cm2=n2d, N_max=N_fan, gamma=gamma)
         Eg = np.linspace(sol.Ee[0] - 0.005, sol.Ee[0] + 0.06, 1500)
         dos = sol.landau_dos(Eg, B=B, gamma=gamma)
         EF_B = sol.fermi_level_B(n2d, B=B, gamma=gamma)
@@ -793,15 +796,40 @@ def strain_figure(s, sol):
     return fig
 
 
-def fan_figure(B, lev, EF):
+def fan_figure(B, lev, EF=None, sol=None, E_span=0.05, levels_info=None):
+    """
+    Landau fan: every Landau level versus field (energy axis fixed to E0-4 meV ... E0+E_span), the Fermi
+    level where it lies inside that window. Returns (figure, note).
+    """
+    import matplotlib.patheffects as pe
+    lev = np.asarray(lev, float)
+    E0 = np.nanmin(lev) if sol is None else float(sol.Ee[0])
+    lo, hi = E0 - 0.004, E0 + E_span
     fig, ax = _fig(9, 4.8)
-    ax.plot(B, lev, color="#7a7a7a", lw=0.6)
-    ax.plot(B, EF, color="#d1495b", lw=2, label="Fermi level")
-    lo, hi = np.nanmin(lev), np.nanmax(EF)
-    ax.set_ylim(lo - 0.002, hi + 0.5 * (hi - lo) + 0.002)
-    ax.set_xlabel("Magnetic field B (T)"); ax.set_ylabel("Energy (eV)"); ax.set_title("Landau fan"); ax.legend()
+    n = lev.shape[1]
+    cols = plt.get_cmap("viridis")(np.linspace(0.05, 0.85, max(n, 2)))
+    order = np.argsort(np.nanmin(lev, axis=0))
+    for rank, j in enumerate(order):
+        y = lev[:, j]
+        if np.nanmin(y) > hi:
+            continue
+        ax.plot(B, y, color=cols[rank], lw=0.9, alpha=0.85)
+    note = ""
+    if EF is not None:
+        EF = np.asarray(EF, float)
+        inside = (EF >= lo) & (EF <= hi)
+        if inside.any():
+            ax.plot(B, np.where(inside, EF, np.nan), color="#d1495b", lw=2.4, label="Fermi level",
+                    path_effects=[pe.Stroke(linewidth=4.2, foreground="white"), pe.Normal()])
+            ax.legend(loc="upper left")
+        if not inside.all():
+            below = np.nanmax(EF[~inside]) < lo
+            note = ("Fermi level below the lowest Landau level (non-degenerate electrons: lower the temperature "
+                    "or raise the density)" if below else "Fermi level above the plotted energy range")
+    ax.set_ylim(lo, hi); ax.set_xlim(B[0], B[-1])
+    ax.set_xlabel("Magnetic field B (T)"); ax.set_ylabel("Energy (eV)"); ax.set_title("Landau fan")
     fig.tight_layout()
-    return fig
+    return fig, note
 
 
 def minibands_figure(E, q, d, rows, base):
