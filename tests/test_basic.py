@@ -165,3 +165,15 @@ def test_schrodinger_poisson_runs():
         sv = Solver(d, T=77, nonparabolic=npar).schrodinger_poisson(verbose=False)
         sv.solve(4, 2)
         assert sv.EF > sv.Ee[0]
+
+
+
+def test_gain_unchanged_by_strain_flag_when_lattice_matched():
+    """regression (0.4.1): strain=True must not change the gain of a lattice-matched well"""
+    import warnings
+    warnings.simplefilter("ignore")
+    s = Structure.single_well(well="GaAs", barrier=("AlGaAs", 0.3), Lw=8, Lb=25)
+    E = np.linspace(1.40, 1.70, 800)
+    g0 = Solver(s, T=300).solve(6, 10).gain(E, 3e12).max()
+    g1 = Solver(s, T=300, strain=True).solve(6, 10).gain(E, 3e12).max()
+    assert abs(g1 - g0) / g0 < 0.02
