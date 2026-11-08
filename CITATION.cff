@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use hetero1d in your research, please cite it as below."
+title: "hetero1d: a one-dimensional semiconductor heterostructure solver"
+abstract: >-
+  hetero1d computes electron and hole states, optical transitions, gain, excitons,
+  carrier statistics, LO-phonon scattering, tunnelling and self-consistent
+  Schrödinger-Poisson solutions in semiconductor quantum wells, superlattices and
+  arbitrary layer stacks, including strain, non-parabolicity, and electric and
+  magnetic fields.
+authors:
+  - name: Ravi Kumar
+    email: rkravi365@gmail.com
+version: 0.4.0
+date-released: 2026-11-08
+license: MIT
+repository-code: "https://github.com/erw-del/hetero1d"
+url: "https://pypi.org/project/hetero1d/"
+keywords:
+  - semiconductor heterostructures
+  - quantum wells
+  - Schrödinger equation
+  - effective mass
+  - strain
+  - optical gain
+  - Python
