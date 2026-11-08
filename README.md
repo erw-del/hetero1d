@@ -49,7 +49,7 @@ to better than 0.01 meV.
 Full examples: [`examples/geometries.py`](examples/geometries.py) ·
 [`examples/arbitrary_potentials.py`](examples/arbitrary_potentials.py)
 
-## Strain, non-parabolicity, scattering and gain (new in 0.2–0.4)
+## Strain, non-parabolicity, scattering and gain 
 ```python
 sol = Solver(s, strain=True).solve()            # strained layers (e.g. InGaAs on GaAs)
 sol.strain_report()                             # strain, band shifts, critical thickness
