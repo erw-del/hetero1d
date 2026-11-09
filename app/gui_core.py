@@ -76,6 +76,54 @@ def n_composition(name):
     return 0 if name in BINARY else (1 if name in TERNARY else 2)
 
 
+def _num(v, default=None):
+    """Number from a table cell; empty cells (None, '', NaN) give the default."""
+    if v is None or (isinstance(v, str) and v.strip() == ""):
+        return default
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return default if f != f else f                                  # NaN -> default
+
+
+def parse_doping(v):
+    """
+    Doping (cm^-3) from a table cell. Accepts numbers and text such as 1e17, 10e17, 3.5E18, -2e17 (acceptors),
+    1x10^17, 1*10^17, 1×10^17, 10^17 or 1e17 cm-3. Empty cells give 0. Raises ValueError for unreadable text.
+    """
+    if v is None:
+        return 0.0
+    if isinstance(v, (int, float, np.integer, np.floating)):
+        return 0.0 if v != v else float(v)
+    s = str(v).strip().lower().replace(" ", "").replace("cm-3", "").replace("cm^-3", "").replace("cm⁻³", "")
+    if s in ("", "none", "nan"):
+        return 0.0
+    for times in ("×10^", "x10^", "*10^", "×10**", "x10**", "*10**"):
+        s = s.replace(times, "e")
+    if s.startswith("10^") or s.startswith("10**"):
+        s = "1e" + s.split("^")[-1].split("**")[-1]
+    elif s.startswith("-10^") or s.startswith("-10**"):
+        s = "-1e" + s.split("^")[-1].split("**")[-1]
+    try:
+        return float(s)
+    except ValueError:
+        raise ValueError(f"cannot read the doping '{v}': write it like 1e17, 3.5e18 or -2e17 (acceptors)")
+
+
+def bound_check(sol):
+    """Warning text when no electron or no hole state is bound (e.g. well and barrier swapped), else ''."""
+    msgs = []
+    if not np.any(sol.e_bound):
+        msgs.append("No bound electron state: the 'well' has a higher conduction band than the barriers (for example "
+                    "GaAs between InGaAs barriers - InGaAs has the smaller band gap, so it should be the well). "
+                    "Swap well and barrier, or deepen the well. Landau levels, transitions and other quantities that "
+                    "need confined states will be empty.")
+    if not np.any(sol.hh_bound):
+        msgs.append("No bound heavy-hole state: the valence band of the well lies below the barriers'.")
+    return msgs
+
+
 def build_structure(p):
     """Build a hetero1d Structure from a dict of user inputs."""
     shape = p["shape"]
@@ -121,12 +169,14 @@ def build_structure(p):
             if not name or not t:
                 continue
             nc = n_composition(name)
-            x = float(row.get("x") or 0) if nc else None
-            y = float(row.get("y") or 0) if nc == 2 else None
-            x_end = row.get("x_end")
-            dop = float(row.get("doping") or 0)
-            if nc and x_end not in (None, "") and float(x_end) != x:
-                x1, tt = float(x_end), float(t)
+            x = _num(row.get("x"), 0.0) if nc else None
+            y = _num(row.get("y"), None) if nc == 2 else None
+            if nc == 2 and y is None:
+                raise ValueError(f"layer {name}: enter the composition y (quaternary alloys need both x and y)")
+            x_end = _num(row.get("x_end"), None)
+            dop = parse_doping(row.get("doping"))
+            if nc and x_end is not None and x_end != x:
+                x1, tt = x_end, float(t)
                 s.add_graded(name, tt, x=lambda z, x0=x, x1=x1, tt=tt: x0 + (x1 - x0) * z / tt, y=y, doping=dop)
             else:
                 s.add(name, float(t), x=x, y=y, doping=dop)

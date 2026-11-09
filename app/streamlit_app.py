@@ -97,11 +97,11 @@ with st.sidebar:
         st.caption("Add a formula potential in section 3 (e.g. parabolic) to create the well.")
     else:
         st.caption("Layers from left to right. x_end ≠ x makes a linearly graded layer. "
-                   "Doping in cm⁻³, e.g. 3e17 (negative = acceptors); needs Schrödinger–Poisson (section 4).")
+                   "Doping in cm⁻³, typed like 1e17, 10e17 or 1x10^17 (negative = acceptors); needs Schrödinger–Poisson (section 4).")
         default = [
-            dict(material="AlGaAs", thickness=25.0, x=0.3, x_end=None, y=None, doping=0.0),
-            dict(material="GaAs", thickness=10.0, x=None, x_end=None, y=None, doping=0.0),
-            dict(material="AlGaAs", thickness=25.0, x=0.3, x_end=None, y=None, doping=0.0),
+            dict(material="AlGaAs", thickness=25.0, x=0.3, x_end=np.nan, y=np.nan, doping="0"),
+            dict(material="GaAs", thickness=10.0, x=np.nan, x_end=np.nan, y=np.nan, doping="0"),
+            dict(material="AlGaAs", thickness=25.0, x=0.3, x_end=np.nan, y=np.nan, doping="0"),
         ]
         column_config = {
             "material": st.column_config.SelectboxColumn("material", options=g.ALL_MATERIALS),
@@ -109,9 +109,10 @@ with st.sidebar:
             "x": st.column_config.NumberColumn("x", min_value=0.0, max_value=1.0, format="%.3f"),
             "x_end": st.column_config.NumberColumn("x_end (graded)", min_value=0.0, max_value=1.0, format="%.3f"),
             "y": st.column_config.NumberColumn("y", min_value=0.0, max_value=1.0, format="%.3f"),
-            "doping": st.column_config.NumberColumn(
-                "doping (cm⁻³)", format="%.2e",
-                help="Donors positive, acceptors negative, e.g. 3e17. Switch on Schrödinger–Poisson in section 4."),
+            "doping": st.column_config.TextColumn(
+                "doping (cm⁻³)",
+                help="Type e.g. 1e17, 10e17, 3.5e18 or 1x10^17; negative = acceptors (-2e17). "
+                     "Switch on Schrödinger–Poisson in section 4."),
         }
         rows = st.data_editor(default, num_rows="dynamic", use_container_width=True, column_config=column_config)
         p["layers"] = list(rows)
@@ -155,7 +156,7 @@ try:
 except Exception as exc:
     st.error(f"Could not solve this structure: {exc}")
     st.stop()
-for m in msgs:
+for m in msgs + g.bound_check(sol):
     st.warning(m)
 
 levels = g.level_tables(sol)
@@ -379,9 +380,18 @@ elif page == "Magnetic field":
     b2 = cC.number_input("Fan to (T)", 0.1, 60.0, 10.0)
     nB = cD.number_input("Sheet density (cm⁻²)", 1e9, 1e13, 3e11, format="%.2e")
     gam = st.slider("Landau-level broadening (meV)", 0.1, 5.0, 1.0) / 1000
+    if not np.any(sol.e_bound):
+        st.error("Landau levels need bound electron subbands, and this structure has none: the well's conduction band "
+                 "lies above the barriers' (well and barrier swapped?). For InGaAs/GaAs use InGaAs as the well and "
+                 "GaAs as the barrier.")
+        st.stop()
     with st.spinner("Landau levels..."):
         Bv = np.linspace(b1, b2, 160)
         lev, levarr, EFB, nu, Eg, dos, EFb, spin = g.landau_data(sol, B, Bv, nB, gamma=gam)
+    if levarr.size == 0 or not np.isfinite(levarr).any():
+        st.error("No Landau levels in this structure (no bound subbands).")
+        st.stop()
+    with st.spinner("Landau-level map..."):
         Bm = np.linspace(b1, b2, 600)                                   # fine field grid: no aliasing
         Em, Bm, D, _ = g.landau_map(sol, Bm, gamma=gam)
         EFm = np.interp(Bm, Bv, EFB)                                    # Fermi level from the fan
