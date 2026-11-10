@@ -1,4 +1,5 @@
 # GUI
+**Try it in your browser, no code:**
 https://hetero1d.streamlit.app/
 # hetero1d
 [![tests](https://github.com/erw-del/hetero1d/actions/workflows/tests.yml/badge.svg)](https://github.com/erw-del/hetero1d/actions/workflows/tests.yml)
